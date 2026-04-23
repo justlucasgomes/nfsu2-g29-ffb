@@ -1,0 +1,19 @@
+# Build artifacts
+build_output/
+out/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# Logs generated at runtime
+logs/
+
+# Compiled binaries (distributed separately as release)
+*.dll
+*.lib
+*.exp
+*.pdb

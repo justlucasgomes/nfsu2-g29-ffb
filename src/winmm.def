@@ -1,0 +1,92 @@
+LIBRARY winmm
+EXPORTS
+    joyGetPosEx
+    joyGetPos
+    joyGetDevCapsA
+    joyGetDevCapsW
+    joyGetNumDevs
+    joyGetThreshold
+    joySetThreshold
+    joySetCapture
+    joyReleaseCapture
+    joyConfigChanged
+
+    timeGetTime
+    timeBeginPeriod
+    timeEndPeriod
+    timeGetDevCaps
+    timeGetSystemTime
+    timeSetEvent
+    timeKillEvent
+
+    PlaySoundA
+    PlaySoundW
+    sndPlaySoundA
+    sndPlaySoundW
+
+    waveOutGetNumDevs
+    waveOutGetDevCapsA
+    waveOutGetDevCapsW
+    waveOutOpen
+    waveOutClose
+    waveOutPrepareHeader
+    waveOutUnprepareHeader
+    waveOutWrite
+    waveOutPause
+    waveOutRestart
+    waveOutReset
+    waveOutBreakLoop
+    waveOutGetPosition
+    waveOutGetVolume
+    waveOutSetVolume
+    waveOutGetID
+    waveOutMessage
+
+    waveInGetNumDevs
+    waveInGetDevCapsA
+    waveInOpen
+    waveInClose
+    waveInPrepareHeader
+    waveInUnprepareHeader
+    waveInAddBuffer
+    waveInStart
+    waveInStop
+    waveInReset
+    waveInGetPosition
+    waveInGetID
+    waveInMessage
+
+    auxGetNumDevs
+    auxGetDevCapsA
+    auxGetVolume
+    auxSetVolume
+    auxOutMessage
+
+    mixerGetNumDevs
+    mixerGetDevCapsA
+    mixerOpen
+    mixerClose
+    mixerGetLineInfoA
+    mixerGetLineControlsA
+    mixerGetControlDetailsA
+    mixerSetControlDetails
+    mixerGetID
+    mixerMessage
+
+    mmioOpenA
+    mmioOpenW
+    mmioClose
+    mmioRead
+    mmioWrite
+    mmioSeek
+    mmioAscend
+    mmioDescend
+    mmioCreateChunk
+    mmioFlush
+    mmioGetInfo
+    mmioSetInfo
+
+    mciSendCommandA
+    mciSendStringA = wmm_mciSendStringA
+    mciGetErrorStringA
+    mciGetDeviceIDA
