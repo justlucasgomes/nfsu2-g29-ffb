@@ -97,6 +97,41 @@ bool WheelInput::EnumerateAndAcquire(IDirectInput8A* pDI) {
     return true;
 }
 
+// ── Window lookup ─────────────────────────────────────────────────────────────
+
+static HWND FindGameWindow() {
+    // Try known NFSU2 window class first
+    HWND hwnd = FindWindowA("Speed2 DirectX Window Class", nullptr);
+    if (hwnd) return hwnd;
+
+    // Fallback: first visible top-level window owned by this process
+    struct Ctx { HWND result; DWORD pid; };
+    Ctx ctx{ nullptr, GetCurrentProcessId() };
+    EnumWindows([](HWND h, LPARAM lp) -> BOOL {
+        auto* c = reinterpret_cast<Ctx*>(lp);
+        DWORD pid = 0;
+        GetWindowThreadProcessId(h, &pid);
+        if (pid == c->pid && IsWindowVisible(h)) { c->result = h; return FALSE; }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&ctx));
+    return ctx.result;
+}
+
+static bool ApplyCooperativeLevel(IDirectInputDevice8A* dev) {
+    HWND hwnd = FindGameWindow();
+    if (!hwnd) return false;
+    HRESULT hr = dev->SetCooperativeLevel(hwnd, DISCL_EXCLUSIVE | DISCL_FOREGROUND);
+    if (FAILED(hr)) {
+        LOG_ERROR("WheelInput: SetCooperativeLevel exclusive failed 0x%08X — trying non-exclusive", hr);
+        hr = dev->SetCooperativeLevel(hwnd, DISCL_NONEXCLUSIVE | DISCL_FOREGROUND);
+        if (FAILED(hr)) {
+            LOG_ERROR("WheelInput: SetCooperativeLevel non-exclusive failed 0x%08X", hr);
+            return false;
+        }
+    }
+    return true;
+}
+
 // ── Device setup ──────────────────────────────────────────────────────────────
 
 static BOOL CALLBACK SetAxisRanges(const DIDEVICEOBJECTINSTANCEA* obj, void* ctx) {
@@ -122,27 +157,24 @@ void WheelInput::SetupDevice() {
     m_pDev->SetDataFormat(&c_dfDIJoystick2);
     m_pDev->EnumObjects(SetAxisRanges, m_pDev, DIDFT_AXIS);
 
-    // Exclusive foreground for FFB ownership
-    HWND hwnd = FindWindowA("Speed2 DirectX Window Class", nullptr);
-    if (!hwnd) hwnd = GetForegroundWindow();
-    HRESULT hr = m_pDev->SetCooperativeLevel(hwnd, DISCL_EXCLUSIVE | DISCL_FOREGROUND);
-    if (FAILED(hr)) {
-        LOG_ERROR("WheelInput: SetCooperativeLevel exclusive failed 0x%08X — trying non-exclusive", hr);
-        m_pDev->SetCooperativeLevel(hwnd, DISCL_NONEXCLUSIVE | DISCL_FOREGROUND);
-    }
-
     // Disable hardware auto-center — FFB engine owns the spring
     DIPROPDWORD ac;
     ac.diph = { sizeof(ac), sizeof(DIPROPHEADER), 0, DIPH_DEVICE };
     ac.dwData = DIPROPAUTOCENTER_OFF;
     m_pDev->SetProperty(DIPROP_AUTOCENTER, &ac.diph);
 
+    // Wait up to 5 s for the game window to appear, then set cooperative level
+    for (int i = 0; i < 50; ++i) {
+        if (ApplyCooperativeLevel(m_pDev)) break;
+        Sleep(100);
+    }
+
     HRESULT acq = m_pDev->Acquire();
     if (SUCCEEDED(acq)) {
         m_state.acquired = true;
         LOG_INFO("WheelInput: device acquired");
     } else {
-        LOG_ERROR("WheelInput: Acquire 0x%08X (will retry)", acq);
+        LOG_ERROR("WheelInput: Acquire 0x%08X (will retry in loop)", acq);
     }
 }
 
@@ -178,6 +210,7 @@ bool WheelInput::PollDevice() {
     if (!m_pDev) return false;
 
     if (!m_state.acquired) {
+        ApplyCooperativeLevel(m_pDev);
         if (SUCCEEDED(m_pDev->Acquire())) {
             m_state.acquired = true;
             LOG_INFO("WheelInput: re-acquired");
@@ -228,12 +261,20 @@ void WheelInput::TelemetryLoop() {
 
     const auto& cfg = g_Config.input;
     int logTick = 0;
+    int prevGear = -1;
 
     while (m_running.load(std::memory_order_relaxed)) {
         auto t0 = std::chrono::steady_clock::now();
 
         // ── 1. Read telemetry — needed before input for dynamic steering ───
         auto tele = Telemetry::Get().Read();
+
+        // ── 1b. Gear shift detection ───────────────────────────────────────
+        if (g_Config.ffb.shiftKickEnabled && tele.playerCarValid) {
+            if (prevGear >= 0 && tele.gear != prevGear && tele.gear > 0)
+                ForceFeedback::Get().TriggerShiftKick(tele.gear - prevGear);
+            prevGear = tele.gear;
+        }
 
         // Latch-based race gate (speed-only, playerCarValid-independent):
         //
@@ -280,9 +321,12 @@ void WheelInput::TelemetryLoop() {
 
             // Dynamic steering lock: smaller lock at higher speed.
             // Ratio = steeringRange / effectiveLock — higher ratio = more responsive.
+            // Per-car steering lock from physics registry; fallback to config.
             float effectiveLock = cfg.dynamicSteering
                 ? DynamicSteeringLock(tele.speed, cfg)
-                : static_cast<float>(cfg.virtualSteeringLock);
+                : (tele.physics.steeringLock > 0.0f
+                   ? tele.physics.steeringLock
+                   : static_cast<float>(cfg.virtualSteeringLock));
             if (effectiveLock > 0.0f && cfg.steeringRange > 0) {
                 float ratio = static_cast<float>(cfg.steeringRange) / effectiveLock;
                 s = std::max(-1.0f, std::min(1.0f, s * ratio));
@@ -354,17 +398,17 @@ void WheelInput::TelemetryLoop() {
             ForceFeedback::Get().Update(tele, steer);
         }
 
-        // ── 4. Periodic log ────────────────────────────────────────────────
+        // ── 4. Periodic log (LogLevel=3 / debug only) ─────────────────────
         if (++logTick >= 100) {
             logTick = 0;
             if (tele.playerCarValid) {
-                LOG_INFO("Tele: %.0f km/h latG=%.2f slip=%.2f steer=%.2f",
-                         tele.speed * 3.6f, tele.lateralAccel / 9.81f,
-                         tele.slipAngle, tele.steerAngle);
+                LOG_DEBUG("Tele: %.0f km/h latG=%.2f slip=%.2f steer=%.2f",
+                          tele.speed * 3.6f, tele.lateralAccel / 9.81f,
+                          tele.slipAngle, tele.steerAngle);
             }
-            LOG_INFO("G29: steer=%.3f thr=%.2f brk=%.2f clt=%.2f",
-                     m_smoothed.steering, m_smoothed.throttle,
-                     m_smoothed.brake, m_smoothed.clutch);
+            LOG_DEBUG("G29: steer=%.3f thr=%.2f brk=%.2f clt=%.2f",
+                      m_smoothed.steering, m_smoothed.throttle,
+                      m_smoothed.brake, m_smoothed.clutch);
         }
 
         // ── 5. Sleep remainder of 10 ms ────────────────────────────────────

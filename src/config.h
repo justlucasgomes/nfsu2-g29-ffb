@@ -34,6 +34,9 @@ struct FFBConfig {
     int   loadTransferMax    = 30;   // % máximo (clamp da adição ao spring)
     float loadTransferSmooth = 0.15f;// EMA alpha (menor = mais suave)
 
+    // ── Longitudinal Load Transfer ────────────────────────────────────────────
+    int   longLoadStrength   = 20;   // % spring added per 1G of braking (front axle loading)
+
     // ── Front Tire Load SAT ───────────────────────────────────────────────────
     int   frontLoadStrength        = 25;  // % — ganho de spring por G lateral dianteiro
 
@@ -73,6 +76,15 @@ struct FFBConfig {
     int  revVibrationStrength      = 2;   // % extra amplitude under throttle
     int  cutVibrationStrength      = 1;   // % transient on throttle lift
     int  idleSpeedThresholdKmh     = 10;  // km/h above which effect is fully gone
+    // Per-car RPM range — export from nfsu2-car-tuning Python project.
+    // Used to normalize tele.rpm into rpmNorm = (rpm - idle) / (redline - idle).
+    int  idleRpm                   = 800; // TODO: set per car
+    int  redlineRpm                = 8000;// TODO: set per car
+
+    // ── Shift Kick ───────────────────────────────────────────────────────────
+    bool  shiftKickEnabled    = true;
+    int   shiftKickStrength   = 15;   // % of max force
+    int   shiftKickDurationMs = 30;   // ms
 
     // ── Legado ───────────────────────────────────────────────────────────────
     int  centerSpring         = 50;    // SAT gain base

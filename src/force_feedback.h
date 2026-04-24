@@ -39,6 +39,10 @@ public:
     // One-shot collision impulse (auto-triggered inside Update from speed delta).
     void TriggerCollision(float impact);
 
+    // One-shot gear shift kick (called from WheelInput on gear change).
+    // gearDelta > 0 = upshift, < 0 = downshift.
+    void TriggerShiftKick(int gearDelta);
+
     bool IsReady() const { return m_ready; }
 
 private:
@@ -56,6 +60,7 @@ private:
     bool CreateCollision();
     bool CreateCurb();
     bool CreateScrub();
+    bool CreateShiftKick();
 
     // Per-frame update helpers
     void UpdateSpring(float speedNorm, float understeerFactor);
@@ -80,19 +85,24 @@ private:
     IDirectInputDevice8A* m_pDev  = nullptr;
     bool                  m_ready = false;
 
-    IDirectInputEffect*   m_pSpring    = nullptr;
-    IDirectInputEffect*   m_pDamper    = nullptr;
-    IDirectInputEffect*   m_pConstF    = nullptr;
-    IDirectInputEffect*   m_pSlip      = nullptr;
-    IDirectInputEffect*   m_pRoad      = nullptr;
-    IDirectInputEffect*   m_pCollision = nullptr;
-    IDirectInputEffect*   m_pCurb      = nullptr;
-    IDirectInputEffect*   m_pScrub     = nullptr;
+    IDirectInputEffect*   m_pSpring     = nullptr;
+    IDirectInputEffect*   m_pDamper     = nullptr;
+    IDirectInputEffect*   m_pConstF     = nullptr;
+    IDirectInputEffect*   m_pSlip       = nullptr;
+    IDirectInputEffect*   m_pRoad       = nullptr;
+    IDirectInputEffect*   m_pCollision  = nullptr;
+    IDirectInputEffect*   m_pCurb       = nullptr;
+    IDirectInputEffect*   m_pScrub      = nullptr;
+    IDirectInputEffect*   m_pShiftKick  = nullptr;
 
     // Collision state
     float  m_prevSpeed        = 0.0f;
     bool   m_collisionActive  = false;
     DWORD  m_collisionEndTick = 0;
+
+    // Shift kick state
+    bool   m_shiftKickActive  = false;
+    DWORD  m_shiftKickEndTick = 0;
 
     // Rear slip assist smoothing (EMA)
     float  m_rearSlipSmoothed     = 0.0f;
@@ -123,6 +133,9 @@ private:
 
     // Low speed hydraulic assist (EMA)
     float  m_lowSpeedAssistSmoothed   = 0.0f;
+
+    // Longitudinal load transfer: braking loads front axle (EMA)
+    float  m_longLoadSmoothed         = 0.0f;
 
     // Engine idle vibration
     float  m_prevLongAccelForVib      = 0.0f;

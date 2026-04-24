@@ -22,6 +22,8 @@ set(SOURCES
     src/pattern_scan.cpp
     src/config.cpp
     src/logger.cpp
+    src/engine_curve.cpp
+    src/car_physics.cpp
 )
 
 add_library(g29_ffb SHARED ${SOURCES})
@@ -99,6 +101,9 @@ add_custom_command(TARGET g29_ffb POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/config.ini"
             "${NFSU2_DIR}/config.ini"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/cars.ini"
+            "${NFSU2_DIR}/cars.ini"
     COMMENT "Deploy to NFSU2"
 )
 

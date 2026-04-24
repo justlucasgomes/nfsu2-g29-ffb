@@ -18,6 +18,7 @@
 #include "force_feedback.h"
 #include "config.h"
 #include "logger.h"
+#include "engine_curve.h"
 
 typedef HRESULT (WINAPI* PFN_DI8Create)(HINSTANCE, DWORD, REFIID, LPVOID*, LPUNKNOWN);
 
@@ -64,6 +65,17 @@ static DWORD WINAPI G29InitThread(LPVOID) {
     wsprintfA(cfgPath, "%sconfig.ini", dir);
     g_Config.Load(std::string(cfgPath));
     ProxyLog("[g29_ffb] G29: config carregada");
+
+    // Load per-car torque curve from cars.ini.
+    // CarName is read directly — avoids adding a string field to FFBConfig.
+    {
+        char carName[64] = "default";
+        GetPrivateProfileStringA("Engine", "CarName", "default",
+                                 carName, sizeof(carName), cfgPath);
+        char carsPath[MAX_PATH];
+        wsprintfA(carsPath, "%scars.ini", dir);
+        LoadEngineCurve(std::string(carsPath), std::string(carName));
+    }
 
     char logPath[MAX_PATH];
     CreateDirectoryA((std::string(dir) + "logs").c_str(), nullptr);

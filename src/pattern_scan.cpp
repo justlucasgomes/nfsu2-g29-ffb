@@ -96,6 +96,15 @@ float SafeReadFloat(uintptr_t addr, float defaultVal) {
     }
 }
 
+DWORD SafeReadDword(uintptr_t addr, DWORD defaultVal) {
+    if (!IsReadable(addr, sizeof(DWORD))) return defaultVal;
+    __try {
+        return *reinterpret_cast<const DWORD*>(addr);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return defaultVal;
+    }
+}
+
 bool IsReadable(uintptr_t addr, size_t bytes) {
     if (!addr) return false;
     MEMORY_BASIC_INFORMATION mbi{};

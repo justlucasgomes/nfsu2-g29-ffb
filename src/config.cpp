@@ -79,6 +79,7 @@ bool Config::Load(const std::string& iniPath) {
     ffb.loadTransferGain              = ToInt  (R("ForceFeedback","LoadTransferGain","35"),              35);
     ffb.loadTransferMax               = ToInt  (R("ForceFeedback","LoadTransferMax","30"),               30);
     ffb.loadTransferSmooth            = ToFloat(R("ForceFeedback","LoadTransferSmooth","0.15"),          0.15f);
+    ffb.longLoadStrength              = ToInt  (R("ForceFeedback","LongLoadStrength","20"),              20);
     ffb.frontSlipThreshold            = ToFloat(R("FrontGripFeedback","FrontSlipThreshold","0.35"),      0.35f);
     ffb.scrubGain                     = ToInt  (R("FrontGripFeedback","ScrubGain","20"),                  20);
     ffb.scrubFrequency                = ToInt  (R("FrontGripFeedback","ScrubFrequency","32"),             32);
@@ -90,6 +91,11 @@ bool Config::Load(const std::string& iniPath) {
     ffb.revVibrationStrength          = ToInt  (R("ForceFeedback","RevVibrationStrength","2"),             2);
     ffb.cutVibrationStrength          = ToInt  (R("ForceFeedback","CutVibrationStrength","1"),             1);
     ffb.idleSpeedThresholdKmh         = ToInt  (R("ForceFeedback","IdleSpeedThreshold","10"),              10);
+    ffb.idleRpm                       = ToInt  (R("Engine","IdleRpm","800"),                               800);
+    ffb.redlineRpm                    = ToInt  (R("Engine","RedlineRpm","8000"),                          8000);
+    ffb.shiftKickEnabled              = ToBool (R("ShiftKick","ShiftKickEnabled","1"),                     true);
+    ffb.shiftKickStrength             = ToInt  (R("ShiftKick","ShiftKickStrength","15"),                   15);
+    ffb.shiftKickDurationMs           = ToInt  (R("ShiftKick","ShiftKickDurationMs","30"),                 30);
 
     auto clamp = [](int v, int lo, int hi){ return std::max(lo, std::min(hi, v)); };
     ffb.lowSpeedWeight       = clamp(ffb.lowSpeedWeight,       0, 100);
@@ -105,6 +111,9 @@ bool Config::Load(const std::string& iniPath) {
     ffb.collisionForce           = clamp(ffb.collisionForce,           0, 100);
     ffb.rearSlipAssistStrength   = clamp(ffb.rearSlipAssistStrength,   0, 100);
     ffb.rearSlipMaxTorque        = clamp(ffb.rearSlipMaxTorque,        0, 100);
+    ffb.shiftKickStrength        = clamp(ffb.shiftKickStrength,        0, 100);
+    ffb.longLoadStrength         = clamp(ffb.longLoadStrength,         0, 100);
+    ffb.shiftKickDurationMs      = clamp(ffb.shiftKickDurationMs,     10, 200);
 
     // [Input]
     input.steeringDeadzone    = ToFloat(R("Input","SteeringDeadzone","0.005"), 0.005f);

@@ -47,6 +47,12 @@ namespace NFSU2_NA {
     // Current gear (int, 0=neutral, 1-6=drive)
     constexpr DWORD OFS_GEAR            = 0x0068;
 
+    // Engine RPM (float).
+    // TODO: find real offset with Cheat Engine — see README for instructions.
+    //       Set to 0x0000 to disable RPM reading and use longAccel fallback.
+    //       Typical NFSU2 range: ~800 (idle) to ~8000 (redline).
+    constexpr DWORD OFS_RPM             = 0x0000;
+
     // Damage state accumulator (0.0 – 1.0 float, increases on collision)
     constexpr DWORD OFS_DAMAGE          = 0x0240;
 

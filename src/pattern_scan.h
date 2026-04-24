@@ -25,6 +25,9 @@ namespace PatternScan {
     // Safe float read with __try/__except guard. Returns defaultVal on AV.
     float SafeReadFloat(uintptr_t addr, float defaultVal = 0.0f);
 
+    // Safe DWORD read with __try/__except guard. Returns defaultVal on AV.
+    DWORD SafeReadDword(uintptr_t addr, DWORD defaultVal = 0);
+
     // Validate that addr points to readable mapped memory.
     bool IsReadable(uintptr_t addr, size_t bytes = 4);
 
