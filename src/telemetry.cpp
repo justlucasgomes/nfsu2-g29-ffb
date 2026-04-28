@@ -621,10 +621,22 @@ TelemetryData Telemetry::Read() {
     if (m_ptrCarPtr) {
         uintptr_t level1 = Deref(m_ptrCarPtr);
         DWORD ofsCarBase = g_Config.telemetry.ofsCarBase;
+        uintptr_t candidate = 0;
         if (ofsCarBase && level1 > 0x00010000u)
-            carBase = Deref(level1 + ofsCarBase);
+            candidate = Deref(level1 + ofsCarBase);
         else
-            carBase = level1;
+            candidate = level1;
+
+        // Sanity gate: validate the resolved car_base by checking that speed
+        // at OFS_SPEED_MPS is a plausible float (0..200 m/s).
+        // This prevents garbage FFB when the pointer chain hits wrong memory.
+        if (candidate > 0x00010000u) {
+            float sanitySpeed = SafeReadFloat(candidate + g_Config.telemetry.ofsSpeedMps, -1.0f);
+            if (sanitySpeed >= 0.0f && sanitySpeed <= 200.0f)
+                carBase = candidate;
+            else
+                LOG_DEBUG("Telemetry: carBase 0x%08X rejected (speed sanity=%.1f)", (DWORD)candidate, sanitySpeed);
+        }
     }
     d.playerCarValid = (carBase != 0);
 
