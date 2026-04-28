@@ -100,9 +100,13 @@ private:
     bool   m_collisionActive  = false;
     DWORD  m_collisionEndTick = 0;
 
-    // Shift kick state
+    // Shift kick state (DirectInput one-shot effect)
     bool   m_shiftKickActive  = false;
     DWORD  m_shiftKickEndTick = 0;
+
+    // Drivetrain shift feel (ConstantForce + engine vib dip)
+    int    m_prevGear         = -1;   // -1 = not yet seen
+    float  m_shiftKickTimer   = 0.0f; // seconds remaining in current kick
 
     // Rear slip assist smoothing (EMA)
     float  m_rearSlipSmoothed     = 0.0f;
@@ -141,6 +145,8 @@ private:
     float  m_prevLongAccelForVib      = 0.0f;
     float  m_cutVibSmoothed           = 0.0f;
     float  m_engineVibFadeSmoothed    = 0.0f;
+    float  m_enginePhase1             = 0.0f;  // accumulated phase for harmonic 1
+    float  m_enginePhase2             = 0.0f;  // accumulated phase for harmonic 2
 
     // Caster return torque (EMA)
     float  m_casterReturnSmoothed   = 0.0f;
@@ -148,4 +154,23 @@ private:
     // High-speed steering damping
     float  m_prevSteer              = 0.0f;
     float  m_highSpeedDampSmoothed  = 0.0f;
+
+    // Dynamic front slip gradient (v0.4.4)
+    float  m_prevFrontSlip          = 0.0f;  // frontSlip value from previous tick
+    float  m_frontSlipTrend         = 0.0f;  // smoothed rate of change (EMA)
+
+    // SAT micro texture layer (v0.5.0)
+    float  m_satMicroTextureSmoothed = 1.0f;  // EMA of microTextureFactor (init=1 avoids startup dip)
+
+    // SAT slip frequency signature (v0.5.1)
+    float  m_prevFrontSlipTrend  = 0.0f;  // trend from previous tick (for 2nd derivative)
+    float  m_satSlipFreqSmoothed = 1.0f;  // EMA of slipFrequencyFactor
+
+    // Front grip memory (v0.4.5)
+    float  m_peakFrontSlip              = 0.0f;  // highest recent frontSlip (reset on recovery)
+    float  m_frontGripRecoverySmoothed  = 0.0f;  // EMA of grip recovered since peak
+
+    // SAT elastic rebound (v0.4.8)
+    float  m_satRecoverySmoothed   = 1.0f;  // smoothed targetRecoveryFactor (init=1 to avoid startup dip)
+    float  m_satElasticRebound     = 0.0f;  // decaying rebound impulse on grip re-seating
 };

@@ -19,6 +19,7 @@
 #include "config.h"
 #include "logger.h"
 #include "engine_curve.h"
+#include "logitech_led.h"
 
 constexpr LONG DI_MAX = DI_FFNOMINALMAX;  // 10000
 
@@ -332,6 +333,180 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
     // High = tires working hard (scrub zone). Very high = front saturated (understeer).
     float frontSlip = std::fabsf(tele.steerAngle) * tele.lateralNorm;
 
+    float microTextureFactor  = 1.0f;  // v0.5.0
+    float slipFrequencyFactor = 1.0f;  // v0.5.1: 2nd derivative of slip (nervousness)
+    // microZone hoisted so both v0.5.0 and v0.5.1 blocks can share it
+    float microZone = 0.0f;
+
+    // ── Dynamic Front Slip Gradient ────────────────────────────────────────────
+    // Communicates the DIRECTION of grip change, not just its magnitude.
+    // Two identical frontSlip values produce different SAT if one is rising and
+    // the other is falling — the driver feels "entering" vs "recovering" limit.
+    //
+    // trend > 0: slip increasing → SAT falls up to 12 % faster ("front escaping")
+    // trend < 0: slip decreasing → SAT recovers up to 6 % ("grip returning")
+    //
+    // Gated by speed (no effect below ~15 % speedNorm) and by proximity to the
+    // understeer threshold (gradient matters most near the limit, not in free air).
+    {
+        float rawDelta = frontSlip - m_prevFrontSlip;
+        m_prevFrontSlip = frontSlip;
+        m_frontSlipTrend += 0.20f * (rawDelta - m_frontSlipTrend);  // EMA smoothing
+
+        float slipLossFactor     = (m_frontSlipTrend > 0.0f)
+            ? 1.0f - std::min(1.0f, m_frontSlipTrend * 8.0f) * 0.12f : 1.0f;
+        float slipRecoveryFactor = (m_frontSlipTrend < 0.0f)
+            ? 1.0f + std::min(1.0f, -m_frontSlipTrend * 8.0f) * 0.06f : 1.0f;
+
+        float slipGradientFactor = std::clamp(slipLossFactor * slipRecoveryFactor,
+                                              0.88f, 1.06f);
+
+        // Speed gate: gradient fades below ~15 % speedNorm (~20 km/h)
+        float speedGate = std::clamp((tele.speedNorm - 0.15f) / 0.30f, 0.0f, 1.0f);
+        // Grip zone gate: full gradient only when approaching the saturation threshold
+        float gripZone  = std::clamp(frontSlip / std::max(0.01f, cfg.understeerFeedbackThreshold),
+                                     0.0f, 1.0f);
+        slipGradientFactor = 1.0f + (slipGradientFactor - 1.0f) * (speedGate * gripZone);
+
+        satSpring *= slipGradientFactor;  // modifies raw satSpring before budget gates
+
+        // Gradient diagnostics — debug only (LogLevel=3)
+        static int s_gradTick = 0;
+        if (++s_gradTick >= 100) {
+            s_gradTick = 0;
+            LOG_DEBUG("FFB front trend: slip=%.2f trend=%+.3f grad=%.2f",
+                      frontSlip, m_frontSlipTrend, slipGradientFactor);
+        }
+    }
+
+    // ── SAT Micro Texture Layer (v0.5.0) ──────────────────────────────────────
+    // Adds micro-granulation to SAT near the front tire saturation threshold.
+    // Source: absolute rate of slip change (|m_frontSlipTrend|), which reflects
+    // the tire's continuous micro-slip oscillations near the grip limit.
+    //
+    // microZone gates the effect to the [65%..100%] region of the threshold,
+    // so texture only appears where tires are actually working hard.
+    // Amplitude is max +4 % — perceptible as granulation, not as a signal spike.
+    // EMA α=0.30 prevents frame-to-frame noise from reaching the wheel motor.
+    {
+        microZone = std::clamp(
+            (frontSlip - cfg.understeerFeedbackThreshold * 0.65f) /
+            std::max(0.01f, cfg.understeerFeedbackThreshold * 0.35f),
+            0.0f, 1.0f);
+
+        float microTexture = std::clamp(
+            std::fabsf(m_frontSlipTrend) * microZone * 1.8f,
+            0.0f, 0.04f);
+
+        float target = 1.0f + microTexture;
+        m_satMicroTextureSmoothed += 0.30f * (target - m_satMicroTextureSmoothed);
+        microTextureFactor = std::clamp(m_satMicroTextureSmoothed, 1.0f, 1.04f);
+
+        static int s_mTick = 0;
+        if (++s_mTick >= 100) {
+            s_mTick = 0;
+            LOG_DEBUG("SATTexture: zone=%.2f tex=%.4f factor=%.3f",
+                      microZone, microTexture, microTextureFactor);
+        }
+    }
+
+    // ── SAT Slip Frequency Signature (v0.5.1) ─────────────────────────────────
+    // Communicates how STABLE the front grip is, not just how active.
+    // Uses slipFreqDelta = m_frontSlipTrend - m_prevFrontSlipTrend (2nd derivative).
+    // High 2nd derivative = slip changing direction rapidly = nervous front axle.
+    // Low  2nd derivative = slip changing slowly = stable front axle.
+    // Active only in microZone (same gate as v0.5.0). Max +3 %. EMA α=0.25.
+    {
+        float slipFreqDelta    = m_frontSlipTrend - m_prevFrontSlipTrend;
+        m_prevFrontSlipTrend   = m_frontSlipTrend;
+
+        float freqTexture = std::clamp(
+            std::fabsf(slipFreqDelta) * microZone * 2.0f,
+            0.0f, 0.03f);
+
+        float target = 1.0f + freqTexture;
+        m_satSlipFreqSmoothed += 0.25f * (target - m_satSlipFreqSmoothed);
+        slipFrequencyFactor = std::clamp(m_satSlipFreqSmoothed, 1.0f, 1.03f);
+
+        static int s_fTick = 0;
+        if (++s_fTick >= 100) {
+            s_fTick = 0;
+            LOG_DEBUG("SATFreq: freqDelta=%+.4f zone=%.2f freqTex=%.4f factor=%.3f",
+                      slipFreqDelta, microZone, freqTexture, slipFrequencyFactor);
+        }
+    }
+
+    // ── Front Grip Memory (v0.4.5) ────────────────────────────────────────────
+    // Tracks the worst recent frontSlip (peak) and measures how much grip has
+    // been recovered since that peak. Adds a proportional SAT recharge when the
+    // driver successfully unloads the front axle after an overload event.
+    //
+    // gripRecoveryFactor >= 1.0 always — it only adds torque back, never removes.
+    // The clamp in springSAT (kB_SAT) ensures the budget is never exceeded.
+    float gripRecoveryFactor = 1.0f;
+    {
+        if (frontSlip > m_peakFrontSlip)
+            m_peakFrontSlip = frontSlip;
+
+        // recoveryNorm (v0.4.9): relative to how far above threshold the peak was.
+        // peak=0.90, threshold=0.55 → available range=0.35.
+        // slip returns to 0.70 → recovered (0.90-0.70)/0.35 = 0.57.
+        // slip returns to 0.55 → recovered 1.0 (full).
+        // More physically correct than dividing by the fixed threshold value.
+        float recoveryNorm = 0.0f;
+        if (m_peakFrontSlip > cfg.understeerFeedbackThreshold) {
+            recoveryNorm = (m_peakFrontSlip - frontSlip)
+                         / std::max(0.01f, m_peakFrontSlip - cfg.understeerFeedbackThreshold);
+        }
+        recoveryNorm = std::clamp(recoveryNorm, 0.0f, 1.0f);
+
+        m_frontGripRecoverySmoothed += 0.15f * (recoveryNorm - m_frontGripRecoverySmoothed);
+
+        // ── Elastic SAT Return (v0.4.6) — ease-out quadratic ─────────────────
+        float recoveryCurve = 1.0f - (1.0f - m_frontGripRecoverySmoothed)
+                                   * (1.0f - m_frontGripRecoverySmoothed);
+
+        // ── SAT Elastic Rebound (v0.4.8) ──────────────────────────────────────
+        // Two-layer response:
+        //   Layer 1 — m_satRecoverySmoothed (α=0.25): tracks target, faster
+        //             than the outer EMA so it creates a closing "velocity".
+        //   Layer 2 — m_satElasticRebound: a damped impulse injected when
+        //             the smoother is still approaching target (grip rebuilding).
+        //             Decays at 0.72× per tick, capped at +2 % of DI_MAX.
+        //
+        // Net effect:
+        //   plain EMA  → 1.00 → 1.01 → 1.02 → 1.03  (overdamped)
+        //   with rebound→ 1.00 → 1.020 → 1.035 → 1.028 → 1.030  (elastic settle)
+        float targetRecoveryFactor = 1.0f + recoveryCurve * 0.06f;
+        constexpr float kRecoveryAlpha = 0.25f;
+        m_satRecoverySmoothed += kRecoveryAlpha * (targetRecoveryFactor - m_satRecoverySmoothed);
+
+        float recoveryVelocity = targetRecoveryFactor - m_satRecoverySmoothed;
+        if (recoveryVelocity > 0.002f)
+            m_satElasticRebound += recoveryVelocity * 0.35f;
+        m_satElasticRebound *= 0.72f;
+        m_satElasticRebound  = std::min(m_satElasticRebound, 0.02f);
+
+        // Reset both states when truly at rest — prevents stale rebound between corners
+        if (frontSlip < 0.05f && tele.speedNorm < 0.15f) {
+            m_satRecoverySmoothed = 1.0f;
+            m_satElasticRebound   = 0.0f;
+        }
+
+        gripRecoveryFactor = std::clamp(
+            m_satRecoverySmoothed + m_satElasticRebound,
+            1.0f,   // floor: recovery never reduces SAT below its normal value
+            1.08f); // ceil: total headroom = +6% curve + max +2% rebound
+
+        // Gradually reset peak when grip is substantially recovered (> 35 % of peak).
+        if (frontSlip < m_peakFrontSlip * 0.65f)
+            m_peakFrontSlip += 0.10f * (frontSlip - m_peakFrontSlip);
+
+        LOG_DEBUG("SATRecovery: recNorm=%.3f curve=%.3f smth=%.3f rbd=%.4f factor=%.3f",
+                  m_frontGripRecoverySmoothed, recoveryCurve,
+                  m_satRecoverySmoothed, m_satElasticRebound, gripRecoveryFactor);
+    }
+
     // Progressive Grip Transition: smooth blend factor that gates scrub and
     // understeer reduction in the 0.7-1.0 near-limit zone. Below 0.7 → 0 (no extra
     // gating), at 1.0 → full weight. Cubic smoothstep avoids velocity discontinuity.
@@ -395,8 +570,47 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
     float understeerFade = gripBlend * totalUndersteer * (cfg.understeerLightening / 100.0f);
     float springSpeed    = std::min(dynWeight * (1.0f - understeerFade), kB_Speed);
 
-    // SAT: stiffness proportional to steer angle × speed² (computed at top of Update)
-    float springSAT      = std::min(satSpring, kB_SAT);
+    // ── SAT with physical falloff ─────────────────────────────────────────────
+    // satLoad: SAT peaks and drops as front tire saturates (Pacejka-style).
+    //   Uses frontSlip as saturation proxy (already computed above).
+    //   Beyond understeerFeedbackThreshold the tire is overloaded — SAT falls
+    //   up to 75 % at full saturation. Driver feels "la frente se fue".
+    float satLoad = 1.0f;
+    if (frontSlip > cfg.understeerFeedbackThreshold) {
+        float overload = (frontSlip - cfg.understeerFeedbackThreshold)
+                       / std::max(0.01f, 1.0f - cfg.understeerFeedbackThreshold);
+        satLoad = 1.0f - std::min(1.0f, overload) * 0.75f;
+    }
+
+    // brakeCornerGate: friction circle proxy for trail braking.
+    //   When combined long + lat load exceeds 75 % of available budget,
+    //   the front axle is near its combined limit → SAT drops up to 60 %.
+    //   Uses previous-frame EMA values (10 ms lag — negligible).
+    float frontUtil = std::min(1.0f,
+        std::sqrt(m_longLoadSmoothed * m_longLoadSmoothed +
+                  m_loadTransferSmoothed * m_loadTransferSmoothed)
+        / (kB_LongLoad + kB_LatLoad));
+    float brakeCornerGate = 1.0f - std::max(0.0f, (frontUtil - 0.75f) / 0.25f) * 0.60f;
+
+    // satUndersteerMult: SAT falls 50 % faster than the spring base under understeer.
+    //   Weight transfer contributions (longLT, latLT, FL) are NOT affected —
+    //   they represent real axle loading that persists through understeer.
+    float satUndersteerMult = 1.0f - understeerFade * 0.5f;
+
+    float springSAT = std::min(
+        satSpring * satLoad * brakeCornerGate * satUndersteerMult
+                  * gripRecoveryFactor * microTextureFactor * slipFrequencyFactor,
+        kB_SAT);
+
+    // SAT diagnostics — debug only (LogLevel=3)
+    {
+        static int s_satTick = 0;
+        if (++s_satTick >= 100) {
+            s_satTick = 0;
+            LOG_DEBUG("FFB SAT: satLoad=%.2f brakeGate=%.2f usMult=%.2f sat=%.3f",
+                      satLoad, brakeCornerGate, satUndersteerMult, springSAT);
+        }
+    }
 
     // Longitudinal load transfer: braking (longAccel < 0) loads front axle
     {
@@ -559,6 +773,32 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
         rpmNorm = std::max(0.0f, std::min(1.0f, tele.longAccel / 8.0f));
     }
 
+    // ── Gear-shift feel ───────────────────────────────────────────────────────
+    // Produces two simultaneous effects on gear change:
+    //   shiftKick — brief positive ConstantForce "toc" scaled with RPM
+    //   shiftDip  — 45 % reduction of engineVib simulating torque cut
+    // Both decay to zero over 80 ms; no effect in neutral (gear <= 0).
+    constexpr float kShiftDuration = 0.08f;
+    constexpr float kDT            = 0.01f;   // loop tick = 10 ms
+
+    float shiftKickAmp = 0.08f + rpmNorm * 0.10f;   // 0.08 at idle, 0.18 at redline
+
+    if (tele.gear > 0) {
+        if (m_prevGear < 0) {
+            m_prevGear = tele.gear;              // first valid read — sync, no kick
+        } else if (tele.gear != m_prevGear) {
+            m_shiftKickTimer = kShiftDuration;
+            m_prevGear       = tele.gear;
+            LOG_INFO("FFB shift: gear=%d rpm=%.0f kick=%.2f",
+                     tele.gear, tele.rpm, shiftKickAmp);
+        }
+    }
+    m_shiftKickTimer = std::max(0.0f, m_shiftKickTimer - kDT);
+
+    float shiftKickFrac = m_shiftKickTimer / kShiftDuration;   // 1.0 → 0.0
+    float shiftKick     = shiftKickAmp * shiftKickFrac;         // decaying kick
+    float shiftDip      = (m_shiftKickTimer > 0.0f) ? 0.55f : 1.0f;  // vib scale
+
     float engineVib = 0.0f;
     if (cfg.enableEngineIdleVibration && tele.playerCarValid) {
         float speedKmh  = tele.speed * 3.6f;
@@ -566,8 +806,6 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
         float speedFade = std::max(0.0f, 1.0f - speedKmh / threshold);
 
         if (speedFade > 0.0f) {
-            float timeS = GetTickCount() * 0.001f;
-
             // Frequency from 2nd engine order (dominant in 4-cylinder engines):
             //   f = 2 × RPM / 60  →  800 RPM → 26.7 Hz, plateau at ~50 Hz from ~1500 RPM
             //   G29 FFB bandwidth caps at ~50 Hz; above that energy is lost in the motor.
@@ -612,10 +850,18 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
                             * (cfg.cutVibrationStrength / 100.0f);
             m_cutVibSmoothed += 0.20f * (cutTarget - m_cutVibSmoothed);
 
-            // ── Combine harmonics ─────────────────────────────────────────────
+            // ── Combine harmonics (phase accumulator — no GetTickCount aliasing) ─
+            // Phases advance by freq × dt each tick; wrapped at 2π to prevent
+            // float precision drift over long sessions.
+            constexpr float kTwoPi = 6.283185307f;
+            constexpr float kDT    = 0.01f;
             float freq2     = idleFreq * 1.8f;
-            float harmonic1 = std::sinf(timeS * idleFreq) * (ampBase + m_cutVibSmoothed);
-            float harmonic2 = std::sinf(timeS * freq2)    * (ampLoad + freeRevAmp);
+            m_enginePhase1 += idleFreq * kDT;
+            m_enginePhase2 += freq2    * kDT;
+            if (m_enginePhase1 > kTwoPi) m_enginePhase1 -= kTwoPi;
+            if (m_enginePhase2 > kTwoPi) m_enginePhase2 -= kTwoPi;
+            float harmonic1 = std::sinf(m_enginePhase1) * (ampBase + m_cutVibSmoothed);
+            float harmonic2 = std::sinf(m_enginePhase2) * (ampLoad + freeRevAmp);
 
             m_engineVibFadeSmoothed += 0.15f * (speedFade - m_engineVibFadeSmoothed);
             engineVib = (harmonic1 + harmonic2) * m_engineVibFadeSmoothed;
@@ -635,6 +881,7 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
         }
         m_prevLongAccelForVib = tele.longAccel;
     }
+    engineVib *= shiftDip;  // attenuate vibration during gear engagement
 
     // ── Center weight ─────────────────────────────────────────────────────────
     // Adds a light centering pull to ConstantForce that simulates caster feel
@@ -653,8 +900,55 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
                             * 0.18f * cwSpeedFactor;
         float centerForce   = centerWeight * (-steeringInput);
 
-        float combined = std::max(-1.0f, std::min(1.0f,
-                         latForce + m_rearSlipSmoothed + engineVib + centerForce));
+        // ── ConstantForce budget system ───────────────────────────────────────
+        // Each component is clamped to its allocated slice before summing.
+        // This mirrors the Spring budget and prevents any single signal from
+        // monopolising the channel and causing silent clipping.
+        //   latForce  0.55 — primary lateral G signal (largest slice)
+        //   rearSlip  0.20 — countersteer assist
+        //   engineVib 0.10 — motor texture (high-freq; G29 bandwidth-limited)
+        //   center    0.08 — centering pull at speed
+        //   shiftKick 0.12 — gear-change impulse
+        //   Σmax      1.05 → clamped to 1.0 at the end
+        constexpr float kCF_LatForce  = 0.55f;
+        constexpr float kCF_RearSlip  = 0.20f;
+        constexpr float kCF_EngineVib = 0.10f;
+        constexpr float kCF_Center    = 0.08f;
+        constexpr float kCF_ShiftKick = 0.12f;
+
+        float cfLat   = std::clamp(latForce,           -kCF_LatForce,  kCF_LatForce);
+        float cfRear  = std::clamp(m_rearSlipSmoothed, -kCF_RearSlip,  kCF_RearSlip);
+        float cfShift = std::clamp(shiftKick,          -kCF_ShiftKick, kCF_ShiftKick);
+
+        // centerForce gated by rear slip: when oversteer develops, the centering
+        // pull recedes so rearSlipAssist has uncontested channel headroom.
+        // rearSlipMag=0 (grip) → full center. rearSlipMag=1 (full slip) → zero center.
+        float rearSlipMag = std::min(1.0f, std::fabsf(m_rearSlipSmoothed) / kCF_RearSlip);
+        float centerGate  = 1.0f - rearSlipMag;
+        float cfCtr   = std::clamp(centerForce * centerGate, -kCF_Center, kCF_Center);
+
+        // engineVib attenuated by lateral load and rear slip.
+        // In straight: full vibration. In heavy corner: -75 %. In oversteer: near zero.
+        // Keeps the grip-communication channel free when it matters most.
+        float latGate  = 1.0f
+                       - std::min(1.0f, std::max(0.0f, tele.lateralNorm - 0.4f) / 0.4f) * 0.75f;
+        float slipGate = 1.0f - std::min(1.0f, std::fabsf(m_rearSlipSmoothed) / kCF_RearSlip);
+        float cfEng   = std::clamp(engineVib * latGate * slipGate, -kCF_EngineVib, kCF_EngineVib);
+
+        float combined = std::clamp(cfLat + cfRear + cfEng + cfCtr + cfShift, -1.0f, 1.0f);
+
+        // Budget snapshot — debug only (LogLevel=3)
+        {
+            static int s_cfTick = 0;
+            if (++s_cfTick >= 100) {
+                s_cfTick = 0;
+                LOG_DEBUG("FFB CF budget: lat=%.2f rear=%.2f eng=%.2f ctr=%.2f shift=%.2f total=%.2f "
+                          "[cGate=%.2f latG=%.2f slipG=%.2f]",
+                          cfLat, cfRear, cfEng, cfCtr, cfShift, combined,
+                          centerGate, latGate, slipGate);
+            }
+        }
+
         LONG  cfMag    = ApplyMinFF(static_cast<LONG>(combined * DI_MAX), 0);
         if (m_pConstF) {
             DICONSTANTFORCE cf{ cfMag };
@@ -709,6 +1003,11 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
     if (std::fabsf(tele.longAccel) > 15.0f)
         curbImpact = std::min(1.0f, (std::fabsf(tele.longAccel) - 15.0f) / 35.0f);
     UpdateCurb(curbImpact);
+
+    // ── 8. Shift-indicator LEDs ───────────────────────────────────────────────
+    // redlineRpm comes from the active engine curve (hot-swapped per car).
+    // When tele.rpm == 0 (OFS_RPM not yet resolved) the LEDs are simply off.
+    UpdateShiftLights(tele.rpm, GetEngineCurve().redlineRpm);
 }
 
 // ── Update helpers ────────────────────────────────────────────────────────────

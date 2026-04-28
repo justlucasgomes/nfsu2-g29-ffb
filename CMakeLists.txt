@@ -24,6 +24,7 @@ set(SOURCES
     src/logger.cpp
     src/engine_curve.cpp
     src/car_physics.cpp
+    src/logitech_led.cpp
 )
 
 add_library(g29_ffb SHARED ${SOURCES})

@@ -22,7 +22,6 @@
 #include "pattern_scan.h"
 #include "nfsu2_addresses.h"
 #include "car_physics.h"
-#include "engine_curve.h"
 
 using namespace NFSU2_NA;
 using namespace PatternScan;
@@ -680,16 +679,15 @@ TelemetryData Telemetry::Read() {
         // Physics lookup — fast O(N) table search, safe to call every frame
         d.physics = GetCarData(d.carId);
 
-        // On car change: log, update engine curve
+        // On car change: log physics (engine curve hot-swap handled in wheel_input.cpp
+        // TelemetryLoop to keep I/O out of this read path)
         if (d.carId != m_prevCarId) {
             if (m_prevCarId != 0 && d.carId != 0)
                 LOG_INFO("Telemetry: carId changed %u → %u", m_prevCarId, d.carId);
-            if (d.carId > 0) {
+            if (d.carId > 0)
                 LOG_INFO("Telemetry: physics loaded mass=%.0f "
                          "frontGrip=%.2f rearGrip=%.2f",
                          d.physics.mass, d.physics.frontGrip, d.physics.rearGrip);
-                EnsureEngineCurveLoaded(d.carId);
-            }
             m_prevCarId = d.carId;
         }
 

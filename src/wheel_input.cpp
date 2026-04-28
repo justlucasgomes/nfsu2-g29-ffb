@@ -19,6 +19,8 @@
 #include "telemetry.h"
 #include "config.h"
 #include "logger.h"
+#include "logitech_led.h"
+#include "engine_curve.h"
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -185,6 +187,7 @@ bool WheelInput::Init(IDirectInput8A* pDI) {
 
     ForceFeedback::Get().Init(m_pDev);
     Telemetry::Get().Init();
+    InitLogitechLED();  // non-fatal if SDK absent
 
     m_running.store(true, std::memory_order_release);
     m_thread = std::thread(&WheelInput::TelemetryLoop, this);
@@ -198,6 +201,7 @@ void WheelInput::Shutdown() {
     m_running.store(false, std::memory_order_release);
     // detach em vez de join — não bloquear DllMain/DLL_PROCESS_DETACH
     if (m_thread.joinable()) m_thread.detach();
+    ShutdownLogitechLED();
     ForceFeedback::Get().Shutdown();
     Telemetry::Get().Shutdown();
     if (m_pDev) { m_pDev->Unacquire(); m_pDev->Release(); m_pDev = nullptr; }
@@ -260,20 +264,22 @@ void WheelInput::TelemetryLoop() {
     constexpr float PEDAL_ALPHA  = 0.5f;
 
     const auto& cfg = g_Config.input;
-    int logTick = 0;
-    int prevGear = -1;
+    int      logTick   = 0;
+    uint32_t prevCarId = UINT32_MAX;  // for EnsureEngineCurveLoaded trigger
 
     while (m_running.load(std::memory_order_relaxed)) {
         auto t0 = std::chrono::steady_clock::now();
 
-        // ── 1. Read telemetry — needed before input for dynamic steering ───
+        // ── 1. Read telemetry ──────────────────────────────────────────────
         auto tele = Telemetry::Get().Read();
 
-        // ── 1b. Gear shift detection ───────────────────────────────────────
-        if (g_Config.ffb.shiftKickEnabled && tele.playerCarValid) {
-            if (prevGear >= 0 && tele.gear != prevGear && tele.gear > 0)
-                ForceFeedback::Get().TriggerShiftKick(tele.gear - prevGear);
-            prevGear = tele.gear;
+        // ── 1b. Engine curve hot-swap on car change ────────────────────────
+        // EnsureEngineCurveLoaded kept out of Telemetry::Read() to avoid I/O
+        // on the hot path. Triggered here, at most once per carId transition.
+        if (tele.carId != prevCarId) {
+            if (tele.carId > 0)
+                EnsureEngineCurveLoaded(tele.carId);
+            prevCarId = tele.carId;
         }
 
         // Latch-based race gate (speed-only, playerCarValid-independent):
