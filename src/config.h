@@ -133,7 +133,7 @@ struct TelemetryConfig {
     //
     // Candidates for PtrPlayerCarPtr (test each with CE pointer chain):
     //   0x0086B2E0 / 0x0086B2E8 / 0x0086B2F4 / 0x0086B390 / 0x0086B3FC
-    DWORD  ptrPlayerCarPtr     = 0x0086B390;  // static ptr → container object
+    DWORD  ptrPlayerCarPtr     = 0x00870910;  // static ptr → container object
     DWORD  ofsCarBase          = 0x0058;      // offset within container → car_base (0=direct)
     DWORD  ofsSpeedMps         = 0x00DC;    // float: speed in m/s
     DWORD  ofsLateralAccel     = 0x0160;    // float: lateral accel m/s²

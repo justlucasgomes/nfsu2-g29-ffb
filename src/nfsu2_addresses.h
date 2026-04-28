@@ -19,11 +19,13 @@ namespace NFSU2_NA {
 
     // Pointer to the active player car simulation object.
     // Dereference → base of NFSU2 car simulation struct.
-    // 0x575748 was WRONG — it is inside .text (code), not .data.
-    // Verified via Cheat Engine: ECX=0x03499C20 at fstp [ecx+0x400] (RPM write).
-    // TODO: replace with the correct .data address found via CE pointer scan
-    //       (scan for value 0x03499C20 in range 0x7E8000–0x8BFFFF).
-    constexpr DWORD PTR_PLAYER_CAR  = 0x575748;   // PLACEHOLDER — needs update
+    // Verified via binary analysis of virtual call sites:
+    //   6 call sites in 0x005BCF61–0x005BDA4D all do:
+    //     mov ecx, [0x00870910]  ; load container (player car physics manager)
+    //     call [ecx+0x88]        ; virtual dispatch → physics update
+    //   Container+0x58 = car_base  (from 005A5540: mov ecx,[esi+0x58])
+    //   car_base+0x400 = RPM float (from 005A5A51: fstp [ecx+0x400])
+    constexpr DWORD PTR_PLAYER_CAR  = 0x00870910;  // static ptr → container
 
     // ── Offsets from car simulation object ────────────────────────────────────
 
