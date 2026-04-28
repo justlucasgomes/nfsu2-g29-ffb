@@ -119,8 +119,9 @@ void Telemetry::BuildRpmCandidates() {
                 off = *reinterpret_cast<const DWORD*>(hit + pe.offPos);
             }
 
-            // Accept only offsets in the plausible car-struct RPM zone
-            if (off >= 0x0050 && off <= 0x0300 && !isKnown(off)) {
+            // Accept offsets in the plausible car-struct RPM zone.
+            // Upper bound raised to 0x0500: NFSU2 RPM verified at 0x0400.
+            if (off >= 0x0050 && off <= 0x0500 && !isKnown(off)) {
                 if (std::find(m_rpmCandidates.begin(), m_rpmCandidates.end(), off)
                     == m_rpmCandidates.end())
                     m_rpmCandidates.push_back(off);
@@ -600,7 +601,11 @@ bool Telemetry::ResolveViaStaticPtr() {
         return false;
     }
     m_ptrCarPtr = ptr;
-    LOG_INFO("Telemetry: using static carPtr=0x%08X", ptr);
+    DWORD ofs = g_Config.telemetry.ofsCarBase;
+    if (ofs)
+        LOG_INFO("Telemetry: 2-level chain: *(*(0x%08X) + 0x%02X) = car_base", ptr, ofs);
+    else
+        LOG_INFO("Telemetry: 1-level chain: *(0x%08X) = car_base", ptr);
     return true;
 }
 
@@ -609,8 +614,18 @@ bool Telemetry::ResolveViaStaticPtr() {
 TelemetryData Telemetry::Read() {
     TelemetryData d{};
 
-    // Resolve car base address from static pointer chain
-    uintptr_t carBase = m_ptrCarPtr ? Deref(m_ptrCarPtr) : 0;
+    // Resolve car base via configurable pointer chain.
+    // OfsCarBase == 0: carBase = *(DWORD*)ptrPlayerCarPtr              (1-level)
+    // OfsCarBase != 0: carBase = *(DWORD*)(*(DWORD*)ptrPlayerCarPtr + OfsCarBase) (2-level)
+    uintptr_t carBase = 0;
+    if (m_ptrCarPtr) {
+        uintptr_t level1 = Deref(m_ptrCarPtr);
+        DWORD ofsCarBase = g_Config.telemetry.ofsCarBase;
+        if (ofsCarBase && level1 > 0x00010000u)
+            carBase = Deref(level1 + ofsCarBase);
+        else
+            carBase = level1;
+    }
     d.playerCarValid = (carBase != 0);
 
     if (carBase) {

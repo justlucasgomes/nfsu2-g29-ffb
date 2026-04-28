@@ -19,8 +19,11 @@ namespace NFSU2_NA {
 
     // Pointer to the active player car simulation object.
     // Dereference → base of NFSU2 car simulation struct.
-    // Verified via HUD speedometer cross-reference.
-    constexpr DWORD PTR_PLAYER_CAR  = 0x575748;   // *PTR_PLAYER_CAR = car_obj
+    // 0x575748 was WRONG — it is inside .text (code), not .data.
+    // Verified via Cheat Engine: ECX=0x03499C20 at fstp [ecx+0x400] (RPM write).
+    // TODO: replace with the correct .data address found via CE pointer scan
+    //       (scan for value 0x03499C20 in range 0x7E8000–0x8BFFFF).
+    constexpr DWORD PTR_PLAYER_CAR  = 0x575748;   // PLACEHOLDER — needs update
 
     // ── Offsets from car simulation object ────────────────────────────────────
 
@@ -48,10 +51,11 @@ namespace NFSU2_NA {
     constexpr DWORD OFS_GEAR            = 0x0068;
 
     // Engine RPM (float).
-    // TODO: find real offset with Cheat Engine — see README for instructions.
-    //       Set to 0x0000 to disable RPM reading and use longAccel fallback.
-    //       Typical NFSU2 range: ~800 (idle) to ~8000 (redline).
-    constexpr DWORD OFS_RPM             = 0x0000;
+    // Verified via Cheat Engine "Find out what writes":
+    //   005A5A51  fstp dword ptr [ecx+00000400]   ECX=0x03499C20
+    //   Write address: 0x03499C20 + 0x400 = 0x0349A020  ✓ (matches CE scan)
+    // Typical range: ~800 RPM (idle) to ~8000 RPM (redline).
+    constexpr DWORD OFS_RPM             = 0x0400;
 
     // Damage state accumulator (0.0 – 1.0 float, increases on collision)
     constexpr DWORD OFS_DAMAGE          = 0x0240;

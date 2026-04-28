@@ -124,14 +124,22 @@ struct InputConfig {
 struct TelemetryConfig {
     bool   usePatternScan      = true;
     // Fallback static addresses (NFSU2 NA, image base 0x400000)
-    // Adjust with Cheat Engine if needed
-    DWORD  ptrPlayerCarPtr     = 0x575748;  // static ptr → car object
+    // Adjust with Cheat Engine if needed.
+    //
+    // Two-level pointer chain (verified via CE "Find out what writes"):
+    //   container  = *(DWORD*)PtrPlayerCarPtr
+    //   car_base   = *(DWORD*)(container + OfsCarBase)   [if OfsCarBase != 0]
+    //   rpm        = *(float*)(car_base  + OFS_RPM)
+    //
+    // Candidates for PtrPlayerCarPtr (test each with CE pointer chain):
+    //   0x0086B2E0 / 0x0086B2E8 / 0x0086B2F4 / 0x0086B390 / 0x0086B3FC
+    DWORD  ptrPlayerCarPtr     = 0x0086B390;  // static ptr → container object
+    DWORD  ofsCarBase          = 0x0058;      // offset within container → car_base (0=direct)
     DWORD  ofsSpeedMps         = 0x00DC;    // float: speed in m/s
     DWORD  ofsLateralAccel     = 0x0160;    // float: lateral accel m/s²
     DWORD  ofsSteerAngle       = 0x0148;    // float: steer angle -1..1
     float  maxSpeedMps         = 88.0f;     // ~317 km/h (top speed NFSU2)
     float  maxLateralAccelMs2  = 25.0f;     // ~2.5 G clamp
-
 };
 
 struct GeneralConfig {

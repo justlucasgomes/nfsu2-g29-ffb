@@ -141,7 +141,8 @@ bool Config::Load(const std::string& iniPath) {
 
     // [Telemetry]
     telemetry.usePatternScan   = ToBool(R("Telemetry","UsePatternScan","1"), true);
-    telemetry.ptrPlayerCarPtr  = ToHex(R("Telemetry","PtrPlayerCarPtr","0x575748"), 0x575748);
+    telemetry.ptrPlayerCarPtr  = ToHex(R("Telemetry","PtrPlayerCarPtr","0x0086B390"), 0x0086B390);
+    telemetry.ofsCarBase       = ToHex(R("Telemetry","OfsCarBase","0x58"), 0x58);
     telemetry.ofsSpeedMps      = ToHex(R("Telemetry","OfsSpeedMps","0x00DC"), 0x00DC);
     telemetry.ofsLateralAccel  = ToHex(R("Telemetry","OfsLateralAccel","0x0160"), 0x0160);
     telemetry.ofsSteerAngle    = ToHex(R("Telemetry","OfsSteerAngle","0x0148"), 0x0148);
