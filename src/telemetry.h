@@ -103,11 +103,18 @@ private:
         bool  alive    = true;  // false = disqualified
     };
 
+    // Heap scan: locates car_base at runtime by matching speed+RPM values.
+    // Runs once per session when the car is moving. Re-runs after game restart.
+    void ScanHeapForCarBase(float refSpeed);
+
     std::atomic<bool> m_ready{false};
 
-    uintptr_t m_ptrCarPtr  = 0;   // static ptr → car object
-    uintptr_t m_addrSpeed  = 0;   // direct address if found via pattern scan
-    float     m_prevSpeed  = 0.0f;
+    uintptr_t m_ptrCarPtr      = 0;   // static ptr → car object (optional)
+    uintptr_t m_addrSpeed      = 0;   // speed address from pattern scan
+    uintptr_t m_dynamicCarBase = 0;   // car_base found by runtime heap scan
+    int       m_heapScanTick   = 0;   // cooldown counter for heap scan
+    int       m_staleCheckTick = 0;   // counter for periodic staleness check
+    float     m_prevSpeed      = 0.0f;
 
     // RPM auto-resolution state
     std::vector<DWORD>         m_rpmCandidates;              // offsets from binary scan

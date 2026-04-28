@@ -609,35 +609,127 @@ bool Telemetry::ResolveViaStaticPtr() {
     return true;
 }
 
+// ── Heap scan for car_base ────────────────────────────────────────────────────
+//
+// Scans committed heap pages for a float matching refSpeed at offset +0x00DC,
+// then validates RPM at +0x0400 and gear at +0x0068.
+// Runs at most once per session (result stored in m_dynamicCarBase).
+// Automatically re-runs after game restart (car_base becomes stale).
+
+void Telemetry::ScanHeapForCarBase(float refSpeed) {
+    using namespace NFSU2_NA;
+    constexpr float SPEED_TOL  = 1.5f;   // m/s match tolerance
+    constexpr uintptr_t HEAP_MIN = 0x01000000u;
+    constexpr uintptr_t HEAP_MAX = 0x40000000u;
+
+    LOG_INFO("Telemetry: heap scan for car_base (refSpeed=%.1f m/s)...", refSpeed);
+    int candidates = 0;
+
+    for (uintptr_t addr = HEAP_MIN; addr < HEAP_MAX; ) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi))) {
+            addr += 0x1000;
+            continue;
+        }
+        uintptr_t regionEnd = addr + mbi.RegionSize;
+
+        // Only scan committed, read-write, non-image pages (heap)
+        if (mbi.State == MEM_COMMIT &&
+            (mbi.Protect & PAGE_READWRITE) &&
+            mbi.Type == MEM_PRIVATE &&
+            mbi.RegionSize <= 0x800000u)  // skip huge allocations (not a car struct)
+        {
+            for (uintptr_t p = addr; p + 4 <= regionEnd; p += 4) {
+                float v = SafeReadFloat(p, -9999.0f);
+                if (v < refSpeed - SPEED_TOL || v > refSpeed + SPEED_TOL) continue;
+
+                // p = carBase + OFS_SPEED_MPS (0x00DC)
+                uintptr_t cand = p - OFS_SPEED_MPS;
+                if (cand < HEAP_MIN) continue;
+
+                // Gate 1: RPM at +0x0400
+                float rpm = SafeReadFloat(cand + OFS_RPM, -1.0f);
+                if (rpm < 500.0f || rpm > 9500.0f) continue;
+
+                // Gate 2: gear at +0x0068 (int 0-6)
+                DWORD gear = SafeReadDword(cand + OFS_GEAR, 99);
+                if (gear > 6) continue;
+
+                // Gate 3: lateral accel at +0x0160 (float, realistic range)
+                float lat = SafeReadFloat(cand + OFS_LATERAL_ACCEL, -9999.0f);
+                if (lat < -60.0f || lat > 60.0f) continue;
+
+                ++candidates;
+                LOG_INFO("Telemetry: heap scan hit — car_base=0x%08X "
+                         "speed=%.1f rpm=%.0f gear=%d lat=%.1f",
+                         (DWORD)cand, v, rpm, (int)gear, lat);
+
+                m_dynamicCarBase = cand;
+                return;  // first valid hit wins
+            }
+        }
+
+        addr = regionEnd;
+    }
+
+    LOG_INFO("Telemetry: heap scan complete — no car_base found "
+             "(refSpeed=%.1f, candidates checked=%d)", refSpeed, candidates);
+}
+
 // ── Read (called every 10 ms) ──────────────────────────────────────────────────
 
 TelemetryData Telemetry::Read() {
     TelemetryData d{};
 
-    // Resolve car base via configurable pointer chain.
-    // OfsCarBase == 0: carBase = *(DWORD*)ptrPlayerCarPtr              (1-level)
-    // OfsCarBase != 0: carBase = *(DWORD*)(*(DWORD*)ptrPlayerCarPtr + OfsCarBase) (2-level)
+    // ── Resolve car_base ──────────────────────────────────────────────────────
+    // Priority 1: static pointer chain (optional, via config)
+    // Priority 2: runtime heap scan anchored on speed from pattern scan
     uintptr_t carBase = 0;
+
+    // --- Priority 1: static pointer chain (config) ---
     if (m_ptrCarPtr) {
         uintptr_t level1 = Deref(m_ptrCarPtr);
         DWORD ofsCarBase = g_Config.telemetry.ofsCarBase;
-        uintptr_t candidate = 0;
-        if (ofsCarBase && level1 > 0x00010000u)
-            candidate = Deref(level1 + ofsCarBase);
-        else
-            candidate = level1;
+        uintptr_t candidate = (ofsCarBase && level1 > 0x00010000u)
+            ? Deref(level1 + ofsCarBase) : level1;
 
-        // Sanity gate: validate the resolved car_base by checking that speed
-        // at OFS_SPEED_MPS is a plausible float (0..200 m/s).
-        // This prevents garbage FFB when the pointer chain hits wrong memory.
         if (candidate > 0x00010000u) {
             float sanitySpeed = SafeReadFloat(candidate + g_Config.telemetry.ofsSpeedMps, -1.0f);
             if (sanitySpeed >= 0.0f && sanitySpeed <= 200.0f)
                 carBase = candidate;
-            else
-                LOG_DEBUG("Telemetry: carBase 0x%08X rejected (speed sanity=%.1f)", (DWORD)candidate, sanitySpeed);
         }
     }
+
+    // --- Priority 2: dynamic heap scan ---
+    if (!carBase) {
+        // Periodic staleness check: verify m_dynamicCarBase still tracks speed
+        if (m_dynamicCarBase && ++m_staleCheckTick >= 50) {
+            m_staleCheckTick = 0;
+            float dynSpeed  = SafeReadFloat(m_dynamicCarBase + g_Config.telemetry.ofsSpeedMps, -1.0f);
+            float refSpeed  = m_addrSpeed ? SafeReadFloat(m_addrSpeed, -1.0f) : -1.0f;
+            if (dynSpeed < 0.0f || (refSpeed >= 0.0f && std::fabsf(dynSpeed - refSpeed) > 5.0f)) {
+                LOG_INFO("Telemetry: dynamic car_base stale — resetting for re-scan");
+                m_dynamicCarBase = 0;
+            }
+        }
+
+        if (m_dynamicCarBase) {
+            carBase = m_dynamicCarBase;
+        } else if (m_addrSpeed) {
+            // Run heap scan when car is moving (reduces false positives)
+            float refSpeed = SafeReadFloat(m_addrSpeed, -1.0f);
+            if (refSpeed > 3.0f && refSpeed < 90.0f) {
+                if (++m_heapScanTick >= 200) {  // every 2 s
+                    m_heapScanTick = 0;
+                    ScanHeapForCarBase(refSpeed);
+                    if (m_dynamicCarBase) carBase = m_dynamicCarBase;
+                }
+            } else {
+                m_heapScanTick = 0;  // reset cooldown when not moving
+            }
+        }
+    }
+
     d.playerCarValid = (carBase != 0);
 
     if (carBase) {
