@@ -647,23 +647,26 @@ void Telemetry::ScanHeapForCarBase(float /*refSpeed*/) {
                  p + 4 <= regionEnd; p += 4)
             {
                 float rpm = SafeReadFloat(p, -1.0f);
-                if (rpm < 750.0f || rpm > 9500.0f) continue;
+                // Use inverted comparison to correctly reject NaN
+                // (NaN comparisons return false, so "rpm < lo || rpm > hi" passes NaN)
+                if (!(rpm >= 750.0f && rpm <= 9500.0f)) continue;
 
                 // p = carBase + OFS_RPM (0x0400)
                 uintptr_t cand = p - OFS_RPM;
-                if (cand < HEAP_MIN) continue;
+                // Car struct is heap-allocated above module space (~0x02000000+)
+                if (cand < 0x02000000u) continue;
 
-                // Gate 1: speed at +0x00DC ∈ [0, 90]
+                // Gate 1: speed at +0x00DC ∈ [0, 90]  (NaN-safe)
                 float spd = SafeReadFloat(cand + OFS_SPEED_MPS, -1.0f);
-                if (spd < 0.0f || spd > 90.0f) continue;
+                if (!(spd >= 0.0f && spd <= 90.0f)) continue;
 
                 // Gate 2: gear at +0x0068 ∈ [0, 6]
                 DWORD gear = SafeReadDword(cand + OFS_GEAR, 99);
                 if (gear > 6) continue;
 
-                // Gate 3: lateral accel at +0x0160 ∈ [-60, 60]
+                // Gate 3: lateral accel at +0x0160 ∈ [-60, 60]  (NaN-safe)
                 float lat = SafeReadFloat(cand + OFS_LATERAL_ACCEL, -9999.0f);
-                if (lat < -60.0f || lat > 60.0f) continue;
+                if (!(lat >= -60.0f && lat <= 60.0f)) continue;
 
                 LOG_INFO("Telemetry: heap scan HIT — car_base=0x%08X "
                          "rpm=%.0f speed=%.1f gear=%d lat=%.1f",
