@@ -616,14 +616,19 @@ bool Telemetry::ResolveViaStaticPtr() {
 // Runs at most once per session (result stored in m_dynamicCarBase).
 // Automatically re-runs after game restart (car_base becomes stale).
 
-void Telemetry::ScanHeapForCarBase(float refSpeed) {
+void Telemetry::ScanHeapForCarBase(float /*refSpeed*/) {
     using namespace NFSU2_NA;
-    constexpr float SPEED_TOL  = 1.5f;   // m/s match tolerance
+    // Anchor on RPM (not speed) — works even when the speed pattern scan failed.
+    // Strategy: scan for a float in the idle-RPM range [750, 9500] at address P.
+    //   carBase candidate = P - OFS_RPM  (since RPM is at carBase + 0x0400)
+    // Validate with three independent gates:
+    //   speed at +0x00DC ∈ [0, 90] m/s
+    //   gear  at +0x0068 ∈ [0, 6]
+    //   lat-g at +0x0160 ∈ [-60, 60] m/s²
     constexpr uintptr_t HEAP_MIN = 0x01000000u;
     constexpr uintptr_t HEAP_MAX = 0x40000000u;
 
-    LOG_INFO("Telemetry: heap scan for car_base (refSpeed=%.1f m/s)...", refSpeed);
-    int candidates = 0;
+    LOG_INFO("Telemetry: heap scan for car_base (anchor=RPM)...");
 
     for (uintptr_t addr = HEAP_MIN; addr < HEAP_MAX; ) {
         MEMORY_BASIC_INFORMATION mbi{};
@@ -633,47 +638,45 @@ void Telemetry::ScanHeapForCarBase(float refSpeed) {
         }
         uintptr_t regionEnd = addr + mbi.RegionSize;
 
-        // Only scan committed, read-write, non-image pages (heap)
-        if (mbi.State == MEM_COMMIT &&
+        if (mbi.State  == MEM_COMMIT     &&
             (mbi.Protect & PAGE_READWRITE) &&
-            mbi.Type == MEM_PRIVATE &&
-            mbi.RegionSize <= 0x800000u)  // skip huge allocations (not a car struct)
+            mbi.Type   == MEM_PRIVATE    &&
+            mbi.RegionSize <= 0x800000u)
         {
-            for (uintptr_t p = addr; p + 4 <= regionEnd; p += 4) {
-                float v = SafeReadFloat(p, -9999.0f);
-                if (v < refSpeed - SPEED_TOL || v > refSpeed + SPEED_TOL) continue;
+            for (uintptr_t p = addr + OFS_RPM;
+                 p + 4 <= regionEnd; p += 4)
+            {
+                float rpm = SafeReadFloat(p, -1.0f);
+                if (rpm < 750.0f || rpm > 9500.0f) continue;
 
-                // p = carBase + OFS_SPEED_MPS (0x00DC)
-                uintptr_t cand = p - OFS_SPEED_MPS;
+                // p = carBase + OFS_RPM (0x0400)
+                uintptr_t cand = p - OFS_RPM;
                 if (cand < HEAP_MIN) continue;
 
-                // Gate 1: RPM at +0x0400
-                float rpm = SafeReadFloat(cand + OFS_RPM, -1.0f);
-                if (rpm < 500.0f || rpm > 9500.0f) continue;
+                // Gate 1: speed at +0x00DC ∈ [0, 90]
+                float spd = SafeReadFloat(cand + OFS_SPEED_MPS, -1.0f);
+                if (spd < 0.0f || spd > 90.0f) continue;
 
-                // Gate 2: gear at +0x0068 (int 0-6)
+                // Gate 2: gear at +0x0068 ∈ [0, 6]
                 DWORD gear = SafeReadDword(cand + OFS_GEAR, 99);
                 if (gear > 6) continue;
 
-                // Gate 3: lateral accel at +0x0160 (float, realistic range)
+                // Gate 3: lateral accel at +0x0160 ∈ [-60, 60]
                 float lat = SafeReadFloat(cand + OFS_LATERAL_ACCEL, -9999.0f);
                 if (lat < -60.0f || lat > 60.0f) continue;
 
-                ++candidates;
-                LOG_INFO("Telemetry: heap scan hit — car_base=0x%08X "
-                         "speed=%.1f rpm=%.0f gear=%d lat=%.1f",
-                         (DWORD)cand, v, rpm, (int)gear, lat);
-
+                LOG_INFO("Telemetry: heap scan HIT — car_base=0x%08X "
+                         "rpm=%.0f speed=%.1f gear=%d lat=%.1f",
+                         (DWORD)cand, rpm, spd, (int)gear, lat);
                 m_dynamicCarBase = cand;
-                return;  // first valid hit wins
+                return;
             }
         }
 
         addr = regionEnd;
     }
 
-    LOG_INFO("Telemetry: heap scan complete — no car_base found "
-             "(refSpeed=%.1f, candidates checked=%d)", refSpeed, candidates);
+    LOG_INFO("Telemetry: heap scan complete — car_base not found");
 }
 
 // ── Read (called every 10 ms) ──────────────────────────────────────────────────
@@ -700,32 +703,26 @@ TelemetryData Telemetry::Read() {
         }
     }
 
-    // --- Priority 2: dynamic heap scan ---
+    // --- Priority 2: dynamic heap scan (anchored on RPM, no speed reference needed) ---
     if (!carBase) {
-        // Periodic staleness check: verify m_dynamicCarBase still tracks speed
+        // Staleness check: verify dynamicCarBase RPM is still in engine range
         if (m_dynamicCarBase && ++m_staleCheckTick >= 50) {
             m_staleCheckTick = 0;
-            float dynSpeed  = SafeReadFloat(m_dynamicCarBase + g_Config.telemetry.ofsSpeedMps, -1.0f);
-            float refSpeed  = m_addrSpeed ? SafeReadFloat(m_addrSpeed, -1.0f) : -1.0f;
-            if (dynSpeed < 0.0f || (refSpeed >= 0.0f && std::fabsf(dynSpeed - refSpeed) > 5.0f)) {
-                LOG_INFO("Telemetry: dynamic car_base stale — resetting for re-scan");
+            float dynRpm = SafeReadFloat(m_dynamicCarBase + NFSU2_NA::OFS_RPM, -1.0f);
+            if (dynRpm < 400.0f || dynRpm > 10000.0f) {
+                LOG_INFO("Telemetry: dynamic car_base stale (rpm=%.0f) — resetting", dynRpm);
                 m_dynamicCarBase = 0;
             }
         }
 
         if (m_dynamicCarBase) {
             carBase = m_dynamicCarBase;
-        } else if (m_addrSpeed) {
-            // Run heap scan when car is moving (reduces false positives)
-            float refSpeed = SafeReadFloat(m_addrSpeed, -1.0f);
-            if (refSpeed > 3.0f && refSpeed < 90.0f) {
-                if (++m_heapScanTick >= 200) {  // every 2 s
-                    m_heapScanTick = 0;
-                    ScanHeapForCarBase(refSpeed);
-                    if (m_dynamicCarBase) carBase = m_dynamicCarBase;
-                }
-            } else {
-                m_heapScanTick = 0;  // reset cooldown when not moving
+        } else {
+            // Scan every 2 s regardless of whether speed pattern was found
+            if (++m_heapScanTick >= 200) {
+                m_heapScanTick = 0;
+                ScanHeapForCarBase(0.0f);
+                if (m_dynamicCarBase) carBase = m_dynamicCarBase;
             }
         }
     }
