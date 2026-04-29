@@ -647,16 +647,15 @@ void Telemetry::ScanHeapForCarBase(float /*refSpeed*/) {
                  p + 4 <= regionEnd; p += 4)
             {
                 float rpm = SafeReadFloat(p, -1.0f);
-                // Use inverted comparison to correctly reject NaN
-                // (NaN comparisons return false, so "rpm < lo || rpm > hi" passes NaN)
-                if (!(rpm >= 750.0f && rpm <= 9500.0f)) continue;
+                // Reject NaN and values outside engine RPM range (NaN-safe inversion)
+                if (!(rpm >= 650.0f && rpm <= 9500.0f)) continue;
 
                 // p = carBase + OFS_RPM (0x0400)
                 uintptr_t cand = p - OFS_RPM;
-                // Car struct is heap-allocated above module space (~0x02000000+)
+                // Car struct is heap-allocated above 0x02000000 (above module space)
                 if (cand < 0x02000000u) continue;
 
-                // Gate 1: speed at +0x00DC ∈ [0, 90]  (NaN-safe)
+                // Gate 1: speed at +0x00DC ∈ [0, 90] m/s  (NaN-safe)
                 float spd = SafeReadFloat(cand + OFS_SPEED_MPS, -1.0f);
                 if (!(spd >= 0.0f && spd <= 90.0f)) continue;
 
@@ -664,9 +663,26 @@ void Telemetry::ScanHeapForCarBase(float /*refSpeed*/) {
                 DWORD gear = SafeReadDword(cand + OFS_GEAR, 99);
                 if (gear > 6) continue;
 
-                // Gate 3: lateral accel at +0x0160 ∈ [-60, 60]  (NaN-safe)
+                // Gate 3: lateral accel at +0x0160 ∈ [-60, 60] m/s²  (NaN-safe)
                 float lat = SafeReadFloat(cand + OFS_LATERAL_ACCEL, -9999.0f);
                 if (!(lat >= -60.0f && lat <= 60.0f)) continue;
+
+                // Gate 4: adaptive RPM plausibility
+                //   Car stationary (spd<1, gear=0): only idle RPM [650, 1500] is valid.
+                //   Power-of-2 values (8192, 4096…) are artificial — reject them.
+                //   Moving: full engine range allowed.
+                if (spd < 1.0f && gear == 0) {
+                    if (!(rpm >= 650.0f && rpm <= 1500.0f)) continue;
+                }
+                // Reject suspiciously "clean" floats: mantissa == 0 means exact power-of-2
+                {
+                    DWORD bits = SafeReadDword(cand + OFS_RPM, 0);
+                    if ((bits & 0x007FFFFFu) == 0) continue;  // mantissa=0 → power-of-2
+                }
+
+                // Gate 5: longitudinal accel at +0x015C ∈ [-30, 30] m/s²  (NaN-safe)
+                float lon = SafeReadFloat(cand + OFS_LONG_ACCEL, -9999.0f);
+                if (!(lon >= -30.0f && lon <= 30.0f)) continue;
 
                 LOG_INFO("Telemetry: heap scan HIT — car_base=0x%08X "
                          "rpm=%.0f speed=%.1f gear=%d lat=%.1f",
