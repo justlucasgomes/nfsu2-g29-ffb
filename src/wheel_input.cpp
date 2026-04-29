@@ -187,7 +187,7 @@ bool WheelInput::Init(IDirectInput8A* pDI) {
 
     ForceFeedback::Get().Init(m_pDev);
     Telemetry::Get().Init();
-    InitLogitechLED();  // non-fatal if SDK absent
+    InitLogitechLED(m_pDev);  // passes G29 handle for DInput Escape LED control
 
     m_running.store(true, std::memory_order_release);
     m_thread = std::thread(&WheelInput::TelemetryLoop, this);

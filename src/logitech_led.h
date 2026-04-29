@@ -1,25 +1,25 @@
 #pragma once
+#define WIN32_LEAN_AND_MEAN
+#define DIRECTINPUT_VERSION 0x0800
+#include <windows.h>
+#include <dinput.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Logitech G29 shift-indicator LEDs — driven by the Logitech Steering Wheel SDK.
+//  G29 shift-indicator LEDs — three-tier approach, best available wins:
 //
-//  The SDK DLL (LogitechSteeringWheel.dll) is loaded dynamically at runtime.
-//  If it is not present, all calls are silently no-ops so the mod continues
-//  to work without Logitech Gaming Software / G HUB installed.
+//  1. DirectInput Escape (primary) — IDirectInputDevice8::Escape(cmd=0)
+//     Uses the G29 device handle directly. No external DLL required.
+//     Works with G HUB. Controls the 5 physical shift LEDs.
 //
-//  Usage:
-//    InitLogitechLED();                       // once, after wheel is detected
-//    UpdateShiftLights(tele.rpm, redline);    // every FFB update frame
-//    ShutdownLogitechLED();                   // on DLL_PROCESS_DETACH
+//  2. Steering Wheel SDK DLL (secondary) — LogitechSteeringWheel.dll
+//     Place the x86 DLL in the NFSU2 game folder. Shipped with LGS.
+//
+//  3. Legacy LED SDK (fallback) — sdk_legacy_led_x86.dll (installed by G HUB)
+//     Controls RGB lighting on compatible Logitech devices (not G29 LEDs).
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Returns true if the SDK was found and initialized successfully.
-bool InitLogitechLED();
+// pDev — G29 DirectInput device handle (used for primary DInput Escape method)
+bool InitLogitechLED(IDirectInputDevice8A* pDev = nullptr);
 
-// Updates G29 shift-indicator LEDs based on current RPM and redline.
-// rpm    — live engine RPM (0 = all LEDs off)
-// redline — RPM at which all LEDs light and blink begins
 void UpdateShiftLights(float rpm, float redline);
-
-// Releases the SDK and turns off all LEDs.
 void ShutdownLogitechLED();
