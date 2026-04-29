@@ -737,7 +737,11 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
         float maxT = cfg.rearSlipMaxTorque / 100.0f;
         rearSlipTarget  = std::max(-maxT, std::min(maxT, rearSlipTarget));
     }
-    m_rearSlipSmoothed += 0.2f * (rearSlipTarget - m_rearSlipSmoothed);
+    // Asymmetric EMA: fast build-up (0.20), slow release (0.06).
+    // Slow release prevents whipping when the car grips back suddenly.
+    float rearAlpha = (std::fabsf(rearSlipTarget) >= std::fabsf(m_rearSlipSmoothed))
+                      ? 0.20f : 0.06f;
+    m_rearSlipSmoothed += rearAlpha * (rearSlipTarget - m_rearSlipSmoothed);
 
     // Load Transfer Weight: enrijece o spring proporcional ao G lateral (EMA).
     float loadTarget = std::fabsf(tele.lateralNorm) * (cfg.loadTransferGain / 100.0f) * physLoadScale;

@@ -559,11 +559,6 @@ bool Telemetry::Init() {
     if (!ok)
         ok = ResolveViaStaticPtr();
 
-    // Build RPM candidate list from binary scan.
-    // Done once at startup — safe because the game module is fully loaded by now.
-    // Validation (picking the right offset) happens lazily in Read().
-    BuildRpmCandidates();
-
     if (ok) {
         m_ready.store(true, std::memory_order_release);
         LOG_INFO("Telemetry: ready — carPtr=0x%08X", (DWORD)m_ptrCarPtr);
@@ -782,21 +777,10 @@ TelemetryData Telemetry::Read() {
 
         // ── RPM ───────────────────────────────────────────────────────────────
         // Priority:
-        //   1. OFS_RPM != 0  — manual override in nfsu2_addresses.h (highest trust)
-        //   2. m_rpmOffset   — auto-resolved via pattern scan + runtime validation
-        //   3. 0.0f          — unresolved; FFB falls back to longAccel proxy
-        {
-            DWORD rpmOfs = (OFS_RPM != 0) ? OFS_RPM : m_rpmOffset;
-            if (rpmOfs != 0) {
-                d.rpm = SafeReadFloat(carBase + rpmOfs, 0.0f);
-                d.rpm = std::max(0.0f, std::min(d.rpm, 15000.0f));
-            } else {
-                d.rpm = 0.0f;
-                // Lazy validation: try to pick a candidate from binary scan.
-                // Runs every frame until resolved — cheap (small vector, safe reads).
-                if (!m_rpmCandidates.empty())
-                    ValidateRpmOffset(carBase);
-            }
+        // RPM at OFS_RPM (0x0400) — verified via Cheat Engine "Find out what writes"
+        if (OFS_RPM != 0) {
+            d.rpm = SafeReadFloat(carBase + OFS_RPM, 0.0f);
+            d.rpm = std::max(0.0f, std::min(d.rpm, 15000.0f));
         }
 
         // ── CarId + physics + engine curve ────────────────────────────────────

@@ -187,7 +187,7 @@ bool WheelInput::Init(IDirectInput8A* pDI) {
 
     ForceFeedback::Get().Init(m_pDev);
     Telemetry::Get().Init();
-    InitLogitechLED(m_pDev);  // passes G29 handle for DInput Escape LED control
+    InitLogitechLED();  // G HUB Legacy LED SDK — RGB colour feedback
 
     m_running.store(true, std::memory_order_release);
     m_thread = std::thread(&WheelInput::TelemetryLoop, this);
