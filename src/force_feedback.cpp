@@ -269,6 +269,14 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
     if (!m_ready) return;
     const auto& cfg = g_Config.ffb;
 
+    // Tick period — single authoritative constant for the 10 ms update loop.
+    constexpr float kDT = 0.01f;
+
+    // Part 1: smooth raw steeringInput → continuous driver intent signal.
+    // α configurable via [AntiOscillation] SteerIntentAlpha (default 0.18 ≈ 55 ms).
+    m_steerIntentSmoothed += g_Config.antiOsc.steerIntentAlpha
+                           * (steeringInput - m_steerIntentSmoothed);
+
     // ── Per-car physics scaling ───────────────────────────────────────────────
     // tele.physics is filled each frame by Telemetry::Read() from car_physics.cpp
     // registry, keyed on the auto-resolved carId.
@@ -327,6 +335,26 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
         if (tele.wheelSpinMax > physRearSlipThresh && tele.speedNorm > minSpeedNorm)
             rearSlipNorm = std::min(1.0f, (tele.wheelSpinMax - physRearSlipThresh)
                                         / (1.0f - physRearSlipThresh));
+    }
+
+    // Part 2: rear slip hysteresis — configurable rise/fall alphas.
+    // Tracks rearSlipNorm with a sticky envelope so the assist doesn't ping-pong
+    // on momentary grip fluctuations during oversteer correction.
+    {
+        const float riseA = g_Config.antiOsc.slipHeldRiseAlpha;
+        const float fallA = g_Config.antiOsc.slipHeldFallAlpha;
+        float slipRise = std::max(0.0f, rearSlipNorm   - m_rearSlipHeld);
+        float slipFall = std::max(0.0f, m_rearSlipHeld - rearSlipNorm);
+        m_rearSlipHeld += slipRise * riseA;
+        m_rearSlipHeld -= slipFall * fallA;
+        m_rearSlipHeld  = std::clamp(m_rearSlipHeld, 0.0f, 1.0f);
+    }
+
+    // Part 3: assist hold timer — sustain assist for holdDurationSec after threshold.
+    {
+        m_assistHoldTimer = std::max(0.0f, m_assistHoldTimer - kDT);
+        if (m_rearSlipHeld > g_Config.antiOsc.holdThreshold)
+            m_assistHoldTimer = g_Config.antiOsc.holdDurationSec;
     }
 
     // Front grip indicator: abs(steerAngle) * lateralNorm — 0..1 product.
@@ -507,6 +535,15 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
                   m_satRecoverySmoothed, m_satElasticRebound, gripRecoveryFactor);
     }
 
+    // Part 3: suppress SAT elastic rebound during rear slip.
+    // When the rear is sliding, the rebound contribution is removed — only the base
+    // recovery (1.0) remains. Prevents the spring from amplifying countersteer forces.
+    // rearSlipNorm is the rear-wheel-spin proxy (0=grip, 1=full slide), already computed above.
+    {
+        float reboundGate  = 1.0f - m_rearSlipHeld;  // hysteresis-aware: held slip, not raw
+        gripRecoveryFactor = 1.0f + (gripRecoveryFactor - 1.0f) * reboundGate;
+    }
+
     // Progressive Grip Transition: smooth blend factor that gates scrub and
     // understeer reduction in the 0.7-1.0 near-limit zone. Below 0.7 → 0 (no extra
     // gating), at 1.0 → full weight. Cubic smoothstep avoids velocity discontinuity.
@@ -679,14 +716,17 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
     finalSpring  = std::max(0.05f, finalSpring + m_roadLoadOscSmoothed);
     UpdateSpring(finalSpring, understeerF);
 
+    // Part 4: capture steering delta before section 2 updates m_prevSteer.
+    // Used in section 3 to damp ConstantForce during fast oscillatory corrections.
+    float deltaSteer = steeringInput - m_prevSteer;
+
     // ── 2. Damper — boost proporcional à velocidade angular do volante ───────
     // steerVelocity: quanto o esterço mudou por segundo (loop = 10 ms).
     // normVel: normalizado pelo limite de 3 lock/s (giro rápido = ~3 em pânico).
     // speedFactor: 0 em repouso → 1 acima de 55 m/s (198 km/h).
     {
-        constexpr float DT      = 0.01f;  // 10 ms tick
         constexpr float MAX_VEL = 3.0f;   // lock-units/s at which high-speed boost saturates
-        float steerVel  = std::fabsf(steeringInput - m_prevSteer) / DT;
+        float steerVel  = std::fabsf(steeringInput - m_prevSteer) / kDT;
         m_prevSteer     = steeringInput;
 
         // High-speed damping: opposes fast inputs at highway speed
@@ -697,7 +737,7 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
 
         // Rack inertia: brief resistance proportional to angular acceleration.
         // Simulates rack/column mass — felt at turn-in, gone once speed stabilizes.
-        float steerAccel    = std::fabsf(steerVel - m_prevSteerVel) / DT;
+        float steerAccel    = std::fabsf(steerVel - m_prevSteerVel) / kDT;
         float steerVelDrop  = std::max(0.0f, m_prevSteerVel - steerVel);
         m_prevSteerVel      = steerVel;
         float accelNorm     = std::min(1.0f, steerAccel / 8.0f);
@@ -783,7 +823,6 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
     //   shiftDip  — 45 % reduction of engineVib simulating torque cut
     // Both decay to zero over 80 ms; no effect in neutral (gear <= 0).
     constexpr float kShiftDuration = 0.08f;
-    constexpr float kDT            = 0.01f;   // loop tick = 10 ms
 
     float shiftKickAmp = 0.08f + rpmNorm * 0.10f;   // 0.08 at idle, 0.18 at redline
 
@@ -858,7 +897,6 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
             // Phases advance by freq × dt each tick; wrapped at 2π to prevent
             // float precision drift over long sessions.
             constexpr float kTwoPi = 6.283185307f;
-            constexpr float kDT    = 0.01f;
             float freq2     = idleFreq * 1.8f;
             m_enginePhase1 += idleFreq * kDT;
             m_enginePhase2 += freq2    * kDT;
@@ -921,14 +959,24 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
         constexpr float kCF_ShiftKick = 0.12f;
 
         float cfLat   = std::clamp(latForce,           -kCF_LatForce,  kCF_LatForce);
-        float cfRear  = std::clamp(m_rearSlipSmoothed, -kCF_RearSlip,  kCF_RearSlip);
+        // intent filter: driver already correcting → reduce assist to prevent over-correction
+        float alignment  = m_steerIntentSmoothed * m_rearSlipSmoothed;  // Part 1: intent, not raw input
+        float assistGate = (alignment > 0.0f)
+            ? 1.0f - std::min(1.0f, alignment) * 0.7f
+            : 1.0f;
+        float cfRear  = std::clamp(m_rearSlipSmoothed * assistGate, -kCF_RearSlip, kCF_RearSlip);
+        // Part 3: hold envelope — sustain full assist during hold window, then
+        // fade with rearSlipHeld. Prevents abrupt assist cutoff causing zig-zag.
+        {
+            float holdFactor = (m_assistHoldTimer > 0.0f) ? 1.0f : 0.0f;
+            cfRear *= std::max(m_rearSlipHeld, holdFactor);
+        }
         float cfShift = std::clamp(shiftKick,          -kCF_ShiftKick, kCF_ShiftKick);
 
-        // centerForce gated by rear slip: when oversteer develops, the centering
-        // pull recedes so rearSlipAssist has uncontested channel headroom.
-        // rearSlipMag=0 (grip) → full center. rearSlipMag=1 (full slip) → zero center.
-        float rearSlipMag = std::min(1.0f, std::fabsf(m_rearSlipSmoothed) / kCF_RearSlip);
-        float centerGate  = 1.0f - rearSlipMag;
+        // Part 4: centerGate uses held slip (hysteresis-aware) + full suppression
+        // while hold timer is active. Center only returns after correction completes.
+        float centerGate  = (1.0f - m_rearSlipHeld * m_rearSlipHeld)
+                          * (m_assistHoldTimer <= 0.0f ? 1.0f : 0.0f);
         float cfCtr   = std::clamp(centerForce * centerGate, -kCF_Center, kCF_Center);
 
         // engineVib attenuated by lateral load and rear slip.
@@ -940,6 +988,23 @@ void ForceFeedback::Update(const TelemetryData& tele, float steeringInput) {
         float cfEng   = std::clamp(engineVib * latGate * slipGate, -kCF_EngineVib, kCF_EngineVib);
 
         float combined = std::clamp(cfLat + cfRear + cfEng + cfCtr + cfShift, -1.0f, 1.0f);
+
+        // Part 4 (prev session): raw steering rate damping — 25% max on fast reversals.
+        {
+            float oscillation = std::fabsf(deltaSteer);
+            float damping     = 1.0f - std::min(1.0f, oscillation * 6.0f) * 0.25f;
+            combined *= damping;
+        }
+
+        // Part 5: smoothed intent oscillation kill — targets slower reversals
+        // missed by raw deltaSteer. Uses m_steerIntentSmoothed delta to kill
+        // residual zig-zag after the raw damper already attenuated fast spikes.
+        {
+            float steerDelta      = std::fabsf(m_steerIntentSmoothed - m_prevSteerIntent);
+            float oscillationKill = 1.0f - std::min(1.0f, steerDelta * 10.0f) * 0.30f;
+            combined *= oscillationKill;
+            m_prevSteerIntent = m_steerIntentSmoothed;
+        }
 
         // Budget snapshot — debug only (LogLevel=3)
         {
@@ -1058,19 +1123,6 @@ void ForceFeedback::UpdateDamper(float boost) {
     m_pDamper->SetParameters(&e, DIEP_TYPESPECIFICPARAMS);
 }
 
-void ForceFeedback::UpdateConstForce(float lateralNorm, float lateralSign) {
-    if (!m_pConstF) return;
-    LONG mag = ApplyMinFF(ScaleMag(lateralNorm, g_Config.ffb.lateralForce), 0);
-    mag = static_cast<LONG>(mag * lateralSign);
-
-    DICONSTANTFORCE cf{ mag };
-    DIEFFECT e{};
-    e.dwSize               = sizeof(e);
-    e.dwFlags              = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
-    e.cbTypeSpecificParams = sizeof(cf);
-    e.lpvTypeSpecificParams = &cf;
-    m_pConstF->SetParameters(&e, DIEP_TYPESPECIFICPARAMS);
-}
 
 void ForceFeedback::UpdateSlipVibration(float slipAmt) {
     if (!m_pSlip) return;

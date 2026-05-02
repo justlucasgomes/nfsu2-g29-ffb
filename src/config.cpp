@@ -149,8 +149,20 @@ bool Config::Load(const std::string& iniPath) {
     telemetry.maxSpeedMps      = ToFloat(R("Telemetry","MaxSpeedMps","88.0"), 88.0f);
     telemetry.maxLateralAccelMs2 = ToFloat(R("Telemetry","MaxLateralAccelMs2","25.0"), 25.0f);
 
+    // [AntiOscillation]
+    antiOsc.steerIntentAlpha  = ToFloat(R("AntiOscillation","SteerIntentAlpha","0.18"),  0.18f);
+    antiOsc.slipHeldRiseAlpha = ToFloat(R("AntiOscillation","SlipHeldRiseAlpha","0.35"), 0.35f);
+    antiOsc.slipHeldFallAlpha = ToFloat(R("AntiOscillation","SlipHeldFallAlpha","0.12"), 0.12f);
+    antiOsc.holdThreshold     = ToFloat(R("AntiOscillation","HoldThreshold","0.35"),     0.35f);
+    antiOsc.holdDurationSec   = ToFloat(R("AntiOscillation","HoldDurationSec","0.25"),   0.25f);
+    antiOsc.steerIntentAlpha  = std::max(0.01f, std::min(1.0f, antiOsc.steerIntentAlpha));
+    antiOsc.slipHeldRiseAlpha = std::max(0.01f, std::min(1.0f, antiOsc.slipHeldRiseAlpha));
+    antiOsc.slipHeldFallAlpha = std::max(0.01f, std::min(1.0f, antiOsc.slipHeldFallAlpha));
+    antiOsc.holdThreshold     = std::max(0.0f,  std::min(1.0f, antiOsc.holdThreshold));
+    antiOsc.holdDurationSec   = std::max(0.0f,  std::min(2.0f, antiOsc.holdDurationSec));
+
     // [General]
-    general.logLevel   = ToInt (R("General","LogLevel","2"), 2);
+    general.logLevel   = ToInt (R("General","LogLevel","1"), 1);
     general.disableASI = ToBool(R("General","DisableASI","0"), false);
 
     LOG_INFO("Config loaded from: %s", iniPath.c_str());

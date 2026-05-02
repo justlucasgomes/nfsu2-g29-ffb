@@ -142,16 +142,30 @@ struct TelemetryConfig {
     float  maxLateralAccelMs2  = 25.0f;     // ~2.5 G clamp
 };
 
+struct AntiOscillationConfig {
+    // Driver intent smoothing (Part 1)
+    float steerIntentAlpha    = 0.18f;  // EMA α — lower = smoother, higher = faster
+
+    // Rear slip hysteresis (Part 2)
+    float slipHeldRiseAlpha   = 0.35f;  // how fast the held-slip level rises
+    float slipHeldFallAlpha   = 0.12f;  // how fast it falls (slower = more hold)
+
+    // Assist hold window (Part 3)
+    float holdThreshold       = 0.35f;  // slip magnitude (0–1) that triggers hold
+    float holdDurationSec     = 0.25f;  // seconds to sustain assist after threshold
+};
+
 struct GeneralConfig {
     int  logLevel      = 1;  // 0=none 1=error 2=info 3=debug
     bool disableASI    = false;
 };
 
 struct Config {
-    FFBConfig       ffb;
-    InputConfig     input;
-    TelemetryConfig telemetry;
-    GeneralConfig   general;
+    FFBConfig             ffb;
+    InputConfig           input;
+    TelemetryConfig       telemetry;
+    AntiOscillationConfig antiOsc;
+    GeneralConfig         general;
 
     bool Load(const std::string& iniPath);
 

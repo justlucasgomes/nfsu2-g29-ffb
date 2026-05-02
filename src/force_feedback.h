@@ -65,7 +65,6 @@ private:
     // Per-frame update helpers
     void UpdateSpring(float speedNorm, float understeerFactor);
     void UpdateDamper(float boost);
-    void UpdateConstForce(float lateralNorm, float lateralSign);
     void UpdateSlipVibration(float slipAmount);
     void UpdateRoadTexture(float speedNorm, float lateralNorm, float speedMps);
     void UpdateCurb(float curbImpact);
@@ -110,6 +109,16 @@ private:
 
     // Rear slip assist smoothing (EMA)
     float  m_rearSlipSmoothed     = 0.0f;
+
+    // Anti-oscillation: smoothed driver intent (Part 1)
+    float  m_steerIntentSmoothed  = 0.0f;
+    float  m_prevSteerIntent      = 0.0f;  // Part 5: intent delta tracking
+
+    // Rear slip hysteresis — fast rise, slow fall (Part 2)
+    float  m_rearSlipHeld         = 0.0f;
+
+    // Assist hold window — sustains assist 250ms after threshold (Part 3)
+    float  m_assistHoldTimer      = 0.0f;
 
     // Load transfer weight smoothing (EMA)
     float  m_loadTransferSmoothed = 0.0f;

@@ -51,6 +51,7 @@ BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
         DisableThreadLibraryCalls(hMod);
         ProxyLogOpen();
         ProxyLog("[g29_ffb] ====================================================");
+        ProxyLog("[g29_ffb] NFSU2 G29 FFB Mod  v0.6.0");
         ProxyLog("[g29_ffb] proxy dinput8.dll carregado (G29 + ASI loader)");
         LoadChainDll();
         LoadASIMods();
