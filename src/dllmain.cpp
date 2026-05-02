@@ -59,7 +59,6 @@ BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
         break;
 
     case DLL_PROCESS_DETACH:
-        // Shutdown não-bloqueante: sinaliza parada, não faz join
         WheelInput::Get().Shutdown();
         ForceFeedback::Get().Shutdown();
         Telemetry::Get().Shutdown();

@@ -101,12 +101,36 @@ static DWORD WINAPI G29InitThread(LPVOID) {
     return 0;
 }
 
-// ── ProxyDevice — passthrough puro de IDirectInputDevice8A ───────────────────
+// ── G29 detection ─────────────────────────────────────────────────────────────
+static bool IsG29Device(IDirectInputDevice8A* pDev) {
+    DIDEVICEINSTANCEA di{ sizeof(di) };
+    if (FAILED(pDev->GetDeviceInfo(&di))) return false;
+    return (di.guidProduct.Data1 & 0xFFFF)        == 0x046D
+        && ((di.guidProduct.Data1 >> 16) & 0xFFFF) == 0xC24F;
+}
+
+// ── ProxyDevice ────────────────────────────────────────────────────────────────
+// Passthrough puro para todos os dispositivos.
+//
+// Exceção: G29 em menus (IsInRace() == false).
+// O G29 envia lY/lRz/slider[0] = 65535 em repouso (hardware invertido).
+// O NFSU2 na tela de login interpreta esses valores como navegação vertical,
+// causando o "phantom scroll". Durante corrida, o perfil do NFSU2 calibra
+// corretamente esses eixos — o problema é apenas antes do login.
+//
+// Solução: no GetDeviceData (caminho buffered usado pelos menus), removemos os
+// eventos de eixo de pedal enquanto IsInRace() == false. Assim que o carro
+// começa a se mover (velocidade > 0.5 m/s), IsInRace() vira true e os eventos
+// passam normalmente para o jogo.
+//
+// GetDeviceState (caminho polling usado na gameplay) não é modificado.
 
 class ProxyDevice : public IDirectInputDevice8A {
 public:
-    explicit ProxyDevice(IDirectInputDevice8A* real) : m_real(real) {
-        ProxyLogFmt("[g29_ffb] ProxyDevice #%d created", ++s_count);
+    explicit ProxyDevice(IDirectInputDevice8A* real, bool isG29)
+        : m_real(real), m_isG29(isG29) {
+        ProxyLogFmt("[g29_ffb] ProxyDevice #%d created%s",
+                    ++s_count, isG29 ? " [G29 — menu filter active]" : "");
     }
     static int s_count;
 
@@ -121,9 +145,28 @@ public:
 
     HRESULT STDMETHODCALLTYPE GetDeviceState(DWORD cb, LPVOID pv) override
         { return m_real->GetDeviceState(cb, pv); }
+
+    // GetDeviceData — caminho buffered (menus do NFSU2).
+    // Quando não estamos em corrida, remove eventos de eixo de pedal do G29
+    // para que o lY=65535 em repouso não cause navegação vertical nos menus.
+    // Offsets DIJOYSTATE: lY=4  lRz=20  rglSlider[0]=24  rglSlider[1]=28
     HRESULT STDMETHODCALLTYPE GetDeviceData(DWORD cb, LPDIDEVICEOBJECTDATA rg,
-                                             LPDWORD pdw, DWORD fl) override
-        { return m_real->GetDeviceData(cb, rg, pdw, fl); }
+                                             LPDWORD pdw, DWORD fl) override {
+        HRESULT hr = m_real->GetDeviceData(cb, rg, pdw, fl);
+        if (SUCCEEDED(hr) && rg && pdw && *pdw > 0
+                && m_isG29 && !WheelInput::Get().IsInRace()) {
+            DWORD out = 0;
+            for (DWORD i = 0; i < *pdw; ++i) {
+                DWORD ofs = rg[i].dwOfs;
+                // Mantém steering (0), botões (>=48), POVs (32-47).
+                // Remove eixos de pedal que causam phantom scroll.
+                bool isPedal = (ofs == 4 || ofs == 20 || ofs == 24 || ofs == 28);
+                if (!isPedal) rg[out++] = rg[i];
+            }
+            *pdw = out;
+        }
+        return hr;
+    }
     HRESULT STDMETHODCALLTYPE GetCapabilities(LPDIDEVCAPS p) override
         { return m_real->GetCapabilities(p); }
     HRESULT STDMETHODCALLTYPE EnumObjects(LPDIENUMDEVICEOBJECTSCALLBACKA cb,
@@ -193,6 +236,7 @@ public:
 
 private:
     IDirectInputDevice8A* m_real;
+    bool                  m_isG29;
 };
 int ProxyDevice::s_count = 0;
 
@@ -237,7 +281,7 @@ public:
                 HANDLE h = CreateThread(nullptr, 0, G29InitThread, nullptr, 0, nullptr);
                 if (h) CloseHandle(h);
             }
-            *ppDev = new ProxyDevice(*ppDev);
+            *ppDev = new ProxyDevice(*ppDev, IsG29Device(*ppDev));
         }
         return hr;
     }
